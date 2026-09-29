@@ -1,0 +1,7 @@
+# 就地构建产物
+build/
+build-*/
+out/
+.vs/
+.vscode/
+*.user

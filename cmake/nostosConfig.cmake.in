@@ -1,0 +1,12 @@
+@PACKAGE_INIT@
+
+# nostos —— header-only 核心 + 唯一需要编译的 loader。
+#
+# 用法：
+#   find_package(nostos CONFIG REQUIRED)
+#   target_link_libraries(my_plugin PRIVATE nostos::core)            # 插件：只要头文件
+#   target_link_libraries(my_host   PRIVATE nostos::core nostos::loader)
+
+include("${CMAKE_CURRENT_LIST_DIR}/nostosTargets.cmake")
+
+check_required_components(nostos)

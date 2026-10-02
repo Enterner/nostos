@@ -7,7 +7,7 @@
 除此之外它还提供一条**跨编译器稳定**的动态插件边界（MinGW 编译的插件塞进 MSVC 编译的宿主）。
 
 - 标准：C++20（MSVC 2022 / GCC 10+ / Clang 12+）
-- 依赖：内核**零依赖**；kit（Tier 1）只收 header-only 单文件库并 vendored（见 DEPENDENCIES.md）
+- 依赖：内核**零依赖**；kit（Tier 1）只收 header-only 单文件库并 vendored（当前仅 `nlohmann/json`）
 - 形态：header-only 核心 + 两个可选静态库（`nostos::loader` 加载器 / `nostos::kit_http` 服务器）+ kit 头
 - 交付：`find_package(nostos)` → `nostos::core`（头文件）/ `nostos::loader` / `nostos::kit` / `nostos::kit_http`
 
@@ -33,6 +33,7 @@ target_link_libraries(my_host PRIVATE nostos::core nostos::loader)
 | `svc_id.hpp` | `fixed_string` + `svc_id<"名字">` / `event_id<E>`：**编译期**服务与事件身份（fnv1a-64），跨编译器稳定 |
 | `guard.hpp` | `Disposable` 协议、`Ownable` 概念、guard 装箱：**任何 RAII 类型**（`unique_lock`/`fstream`/自写锁）零适配接入 |
 | `scope.hpp` | `Scope`：`own(guard)` / `defer(fn)` / `spawn()` 子作用域 / `reset()`；LIFO 逆序回滚，幂等 `noexcept` |
+| `plugin_scope.hpp` | **ABI 插件的 L0 门面**：把 Scope/guard 开放给动态插件（插件内多步事务"任一步失败 LIFO 还原"的入口；只含 L0，零宿主世界依赖） |
 | `executor.hpp` | `Executor` 接缝（`post`）+ `InlineExecutor` / `QueueExecutor`：单线程核心的调度口 |
 | `error.hpp` | `nostos_error` 家族：`missing_service` / `duplicate_service` / `type_mismatch` / `undeclared_provide` / `event_name_collision` / `plugin_error`，**消息永远点名** |
 
@@ -67,13 +68,14 @@ target_link_libraries(my_host PRIVATE nostos::core nostos::loader)
 | `kit/config.hpp` | header-only | 四层取值（默认←JSON←环境←覆盖）+ `on_change` 热更；JSON 用 vendored nlohmann/json |
 | `kit/timer.hpp` | header-only | every / after / throttle / debounce，回调经 dispatch 投回宿主线程 |
 | `kit/task.hpp` | header-only | 后台任务：block（join）/ discard（安全逃逸）两种关停语义 + 并发上限 |
+| `kit/scratch.hpp` | header-only | 同步 emit 的载荷稳定缓冲：`Scratch::hold(string)→const char*`，作用域即寿命，地址跨后续 hold 稳定（事件载荷"调用期有效"纪律的调用点表达） |
 | `kit/http.hpp` | `nostos::kit_http` | 单线程 select 循环 HTTP/1.1 + SSE：每客户端有界缓冲做背压，慢客户端不可能拖住别人 |
 | `kit/win.hpp` | header-only | 文件选择对话框 + UTF-8 转换（非 Windows 降级） |
 | `kit/process.hpp` | header-only | 子进程生命周期（Windows） |
 | `abi/nostos_services.h` | header-only | 知名服务表的 C 布局（`nostos.log.v1` 等） |
 
 kit 侧的"effect 记账"助手：`kit::Subscriptions`（VS Code Disposable 形态，逆序统一释放）。
-依赖台账见 [DEPENDENCIES.md](DEPENDENCIES.md)。
+依赖台账：vendored 依赖仅 `nlohmann/json` 3.11.3（header-only，MIT），随 kit 分发。
 
 ---
 
@@ -140,21 +142,7 @@ struct MyPlugin {
     void deactivate() noexcept {}
 };
 NOSTOS_PLUGIN(MyPlugin)
-```
 
-```cpp
-// 宿主：运行期按路径加载，不链接插件
-nostos::Host<> host;
-host.start();
-auto plugin = nostos::DynamicPlugin::load("path/to/my_plugin.dll");
-plugin.activate(host.abi_bridge());
-plugin.deactivate();
-plugin.unload();
-```
-
-完整的可运行示例是仓库里的 `app/` + `plugin/`（`nostos_test/package_consumer` 是"只用装出来的 SDK"的第三方视角），
-设计理由与取舍在 `docs/design.md`；**逐文件的实现解析（含 Mermaid 调用流程图）**见
-[`../内核解析/`](../内核解析/README.md)。这两份文档在开发工作区里，不随内核仓库分发。
 
 ## 许可
 

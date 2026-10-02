@@ -117,6 +117,36 @@ public:
         if (can_publish() && api_->unpublish != nullptr) api_->unpublish(svc_id);
     }
 
+    // ---- poster ------------------------------------------------------------
+
+    // Acquire a poster bound to this activation session (proposal-kit §6.1).
+    // Only legal during activate(), where this bridge is installed. A host
+    // that predates the appended slot reports NOSTOS_ERR_BAD_STATE — the same
+    // convention publish() uses for a missing capability — so callers treat
+    // "no poster" uniformly instead of probing struct sizes by hand.
+    nostos_status acquire_poster(struct nostos_poster* out) const noexcept {
+        if (!valid() || !NOSTOS_HOST_HAS(api_, acquire_poster) || api_->acquire_poster == nullptr)
+            return NOSTOS_ERR_BAD_STATE;
+        return api_->acquire_poster(out);
+    }
+
+    // ---- published 枚举（跨 ABI 域的“发现”）---------------------------------
+
+    // 宿主实现了枚举槽位时为 true（尾部追加的槽位，旧宿主没有）。
+    bool can_published_list() const noexcept {
+        return valid() && NOSTOS_HOST_HAS(api_, published_list) && api_->published_list != nullptr;
+    }
+
+    // 枚举宿主当前 published 的服务：最多写 cap 个条目（注册序），返回写入数；
+    // cap == 0 或 out == NULL 返回当前总数（不写入）。name 随注册表条目存活，
+    // unpublish / 重新发布后失效——要留存必须拷贝。旧宿主返回 0（先问
+    // can_published_list() 可区分“没有该能力”与“当前没有服务”）。
+    std::uint32_t published_list(struct nostos_published_entry* out,
+                                 std::uint32_t cap) const noexcept {
+        if (!can_published_list()) return 0;
+        return api_->published_list(out, cap);
+    }
+
     // ---- events -----------------------------------------------------------
 
     // A subscription that owns its callable: dropping it unsubscribes.

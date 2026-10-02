@@ -20,6 +20,9 @@
 # 宿主契约头（app/contract.hpp）与"参考宿主"的位置。演示插件实现的是宿主的契约，所以默认
 # 指向仓库根下的 app/；插件若想自带宿主（一体编译），也用这两个变量找宿主源码。
 # 不实现宿主契约的插件（例如纯测试替身）用不到它们。
+# 注意（外部产品仓必读）：这里指向的是内核**自带示例宿主**的契约（demo 契约）。你的宿主
+# 契约头在自己的仓库里——请自行 target_include_directories 指过去，不要 include 这里的
+# app/contract.hpp，否则拿到的是演示契约而不是你的产品契约。
 set(NOSTOS_APP_DIR "${NOSTOS_ROOT}/app" CACHE PATH "参考宿主目录（contract.hpp 与 main.cpp）")
 
 # 模块产物一律落在**本工程自己的构建树**里（各自的编译在各自目录）：
@@ -59,6 +62,11 @@ endfunction()
 # 没设时保持 CMake 默认（= 本工程构建树），这样把插件目录单独拷出去也能编。
 function(nostos_plugin_artifact_dir target)
     if(NOT NOSTOS_PRESET_LABEL)
+        # 没有预设标签时，产物落在本工程构建树的默认位置（多配置生成器还多一层 <config>），
+        # 而宿主按"插件目录/build-<preset>/<config>/"的文档约定找模块——绕开预设构建会让它
+        # 扑空。这里点名提醒，避免"构建成功却加载不到"的静默错位。
+        message(STATUS "nostos: ${target} 未设 NOSTOS_PRESET_LABEL —— 产物在默认构建树，"
+                       "不在 build-<preset>/（宿主按后者找模块；用各插件的 CMakePresets 构建可消除本提示）")
         return()
     endif()
     set(_dir "${CMAKE_CURRENT_SOURCE_DIR}/build-${NOSTOS_PRESET_LABEL}")

@@ -76,12 +76,39 @@ typedef enum nostos_status {
  * nostos_host_api::acquire_poster 领取，随激活会话失效——deactivate 之后
  * post 返回 NOSTOS_ERR_BAD_STATE，fn 不再执行。post 从任意线程调用都是
  * 安全的；宿主在宿主线程上执行 fn(arg)，执行期间以领取者的桥包裹，
- * 因此 fn 体内完整的宿主 API 可用。fn 约定不抛异常（宿主执行侧仍会兜底）。 */
+ * 因此 fn 体内完整的宿主 API 可用。fn 约定不抛异常（宿主执行侧仍会兜底）。
+ *
+ * 所有权语义（完整版）：post 返回 OK 只代表"已入队"——**不保证执行**。
+ * 会话作废时尚未排水的任务会被作废；投递方有两种出口：
+ *   1) 注册 on_drop（见下）：作废时宿主逐条回调，投递方就地回收；
+ *   2) 未注册：维持旧实现——静默丢弃，载荷由投递方自理（即泄漏）。 */
 typedef struct nostos_poster {
     uint32_t struct_size;   /* 由宿主填充 sizeof(nostos_poster) */
     void* self;             /* 宿主内部状态（借用；随桥存活） */
     nostos_status (*post)(void* self, void (*fn)(void* arg), void* arg);
+
+    /* 尾部追加（NOSTOS_POSTER_HAS(poster, on_drop) 门控）：注册本 poster 的
+     * "丢弃回调"。会话作废时仍未执行的已入队任务，宿主在**宿主线程**上
+     * 逐条调用 fn(arg)（arg = 当初 post 的 arg），投递方据此回收载荷。
+     * 约定：fn 必须是静态的、只触碰 arg——回调发生在会话作废之后，插件
+     * 对象已析构（代码段仍映射到 unload 为止），不得触碰插件成员；fn
+     * 不抛异常。同一 poster 反复注册以最后一次为准 ⇒ 同一 poster 应投递
+     * 同构载荷（或 fn 自带类型标记）。未注册/旧宿主 ⇒ 静默丢弃（旧行为）。 */
+    nostos_status (*on_drop)(void* self, void (*fn)(void* arg));
 } nostos_poster;
+
+#define NOSTOS_POSTER_HAS(poster, field)                                  \
+    ((poster) != NULL &&                                                  \
+     (poster)->struct_size >=                                             \
+         (uint32_t)(offsetof(nostos_poster, field) + sizeof((poster)->field)))
+
+/* published 服务的枚举条目（nostos_host_api::published_list 用）。
+ * name 指向注册表内的 UTF-8 串：随该条目存活——unpublish / 重新发布后失效，
+ * 要留存必须拷贝（纪律 5 的注册表版）。 */
+typedef struct nostos_published_entry {
+    uint64_t svc_id;
+    const char* name;
+} nostos_published_entry;
 
 /* Injected by the host into nostos_plugin_api::activate. Function pointers
  * in this table stay valid for the host's lifetime. */
@@ -129,6 +156,15 @@ typedef struct nostos_host_api {
      * Returns NOSTOS_ERR_INVALID_ARG for a null out, NOSTOS_ERR_FAILED on
      * allocation failure. */
     nostos_status (*acquire_poster)(struct nostos_poster* out);
+
+    /* Enumerate the published services (appended; gate with
+     * NOSTOS_HOST_HAS(host, published_list)). Writes at most cap entries in
+     * registration order and returns how many were written; cap == 0 (or a
+     * NULL out) returns the current total without writing. This is the
+     * cross-ABI-domain "discovery" surface — tool self-description, status
+     * panels and the like; hosts in the same ABI domain use
+     * PublishedRegistry::entries() directly. */
+    uint32_t (*published_list)(struct nostos_published_entry* out, uint32_t cap);
 } nostos_host_api;
 
 /* Size of the frozen v1 prefix — what an older peer's sizeof() would be. */

@@ -25,6 +25,7 @@
 // forgets to unpublish. Before those tables go away, the *dependents* are
 // rolled back through the revoker hook Host<...> installs.
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -146,9 +147,27 @@ public:
         // The poster half. A poster acquired in this session stops accepting
         // work: a plugin that kept its own thread posting after deactivate
         // would have the host running plugin code past its teardown.
-        for (std::size_t i = session_posters_.size(); i > mark.posters; --i)
-            session_posters_[i - 1]->live = false;
-        session_posters_.resize(mark.posters);
+        // F11：作废前先走"丢弃回调"——会话内入队成功但未排水的任务，逐条交还
+        // 投递方回收（fn 必须是静态的、只触碰 arg：此刻插件对象已析构，代码段
+        // 仍映射到 unload 为止）。未注册 on_drop ⇒ 维持旧语义（静默丢弃）。
+        const std::size_t poster_from = session_marks_.empty() ? 0 : mark.posters;
+        for (std::size_t i = session_posters_.size(); i > poster_from; --i) {
+            PosterState* ps = session_posters_[i - 1];
+            std::vector<std::pair<void (*)(void*), void*>> dropped;
+            void (*drop)(void*) = nullptr;
+            {
+                std::lock_guard<std::mutex> lock(ps->mu);
+                ps->live = false;
+                dropped.swap(ps->pending);
+                drop = ps->drop;
+            }
+            if (drop != nullptr)
+                for (auto& task : dropped) {
+                    const HostBridge::Guard guard{*this};
+                    drop(task.second);  // 约定：fn 不抛（宿主侧再兜底一层）
+                }
+        }
+        session_posters_.resize(poster_from);
     }
 
     std::size_t session_depth() const noexcept { return session_marks_.size(); }
@@ -172,15 +191,34 @@ public:
         std::mutex mu;
         std::vector<std::pair<void (*)(void*), void*>> pending;
         bool live = true;
+        void (*drop)(void*) = nullptr;  // 会话作废时未执行任务的逐条回收回调（可空；F11）
     };
 
     // 表槽位（static：表构造器在类外引用）。自带锁；会话作废后返回 BAD_STATE。
     static nostos_status post_thunk(void* self, void (*fn)(void*), void* arg) noexcept {
         auto* ps = static_cast<PosterState*>(self);
         if (ps == nullptr || fn == nullptr) return NOSTOS_ERR_INVALID_ARG;
+        {
+            std::lock_guard<std::mutex> lock(ps->mu);
+            if (!ps->live) return NOSTOS_ERR_BAD_STATE;
+            ps->pending.push_back({fn, arg});
+        }
+        // 唤醒接缝：锁外触发（hook 只做唤醒；即便 hook 里就地排水也不会死锁——
+        // drain_posted 自己上锁）。见 set_post_wake。
+        if (ps->bridge != nullptr) {
+            if (auto* wake = ps->bridge->wake_fn_.load(std::memory_order_acquire))
+                wake(ps->bridge->wake_arg_.load(std::memory_order_acquire));
+        }
+        return NOSTOS_OK;
+    }
+
+    // 表槽位（static）：注册"丢弃回调"（F11：post 成功但会话作废时未执行的任务，
+    // 作废时逐条回调 fn(arg)，投递方就地回收——未注册则维持旧语义：静默丢弃）。
+    static nostos_status on_drop_thunk(void* self, void (*fn)(void* arg)) noexcept {
+        auto* ps = static_cast<PosterState*>(self);
+        if (ps == nullptr || fn == nullptr) return NOSTOS_ERR_INVALID_ARG;
         std::lock_guard<std::mutex> lock(ps->mu);
-        if (!ps->live) return NOSTOS_ERR_BAD_STATE;
-        ps->pending.push_back({fn, arg});
+        ps->drop = fn;  // 同一 poster 反复注册以最后一次为准（契约明示）
         return NOSTOS_OK;
     }
 
@@ -196,6 +234,19 @@ public:
         }
     }
 
+    // ---- post 唤醒接缝 ------------------------------------------------------
+
+    // post 成功入队后，在**投递线程上**触发一次 hook（若已设置）。宿主用它从
+    // 阻塞等待（事件/信号量）中醒来排水，替代固定节奏的轮询——轮询要低延迟
+    // 就得高频空转，要省电就得拉长周期；不设置则维持轮询模式，现有宿主零改动。
+    // 约定：hook 必须 noexcept 且轻（只做“唤醒”，重活留给排水后的任务体）；
+    // 宿主应在装载插件前设置一次——运行期更换不作同步承诺（投递线程可能读到
+    // 旧组合；构造性规避：只置一次）。
+    void set_post_wake(void (*fn)(void*), void* arg) noexcept {
+        wake_fn_.store(fn, std::memory_order_release);
+        wake_arg_.store(arg, std::memory_order_release);
+    }
+
     // activate 期间领取（此时本桥在 TLS 上）。同一会话内幂等。
     nostos_status acquire_poster(struct nostos_poster* out) {
         if (out == nullptr) return NOSTOS_ERR_INVALID_ARG;
@@ -206,6 +257,7 @@ public:
         out->struct_size = sizeof(nostos_poster);
         out->self = &ps;
         out->post = &post_thunk;
+        out->on_drop = &on_drop_thunk;
         return NOSTOS_OK;
     }
 
@@ -305,6 +357,10 @@ private:
     // session_posters_ 与 session_marks_ 平行，end_session 时按基准作废。
     std::deque<PosterState> posters_;
     std::vector<PosterState*> session_posters_;
+
+    // 唤醒接缝（见 set_post_wake）。atomic：post 来自任意插件的任意线程。
+    std::atomic<void (*)(void*)> wake_fn_{nullptr};
+    std::atomic<void*> wake_arg_{nullptr};
 };
 
 namespace detail {
@@ -410,6 +466,26 @@ inline void emit_thunk(std::uint64_t event_id, const void* payload) noexcept {
     }
 }
 
+inline uint32_t published_list_thunk(struct nostos_published_entry* out, uint32_t cap) noexcept {
+    HostBridge* bridge = HostBridge::current();
+    if (bridge == nullptr) return 0;
+    try {
+        const auto& registry = bridge->core().published();
+        const auto& ids = registry.ids();
+        if (out == nullptr || cap == 0) return static_cast<uint32_t>(ids.size());
+        const uint32_t count = cap < ids.size() ? cap : static_cast<uint32_t>(ids.size());
+        for (uint32_t i = 0; i < count; ++i) {
+            out[i].svc_id = ids[i];
+            // 名字指向注册表内部存储：随条目存活（unpublish / 重新发布后失效）。
+            const std::string* name = registry.name_of(ids[i]);
+            out[i].name = name != nullptr ? name->c_str() : "";
+        }
+        return count;
+    } catch (...) {
+        return 0;
+    }
+}
+
 }  // namespace detail
 inline const nostos_host_api* HostBridge::host_api_table() noexcept {
     static const nostos_host_api table = {
@@ -423,6 +499,7 @@ inline const nostos_host_api* HostBridge::host_api_table() noexcept {
         &detail::unpublish_thunk,
         &detail::emit_thunk,
         &HostBridge::acquire_poster_thunk,
+        &detail::published_list_thunk,
     };
     return &table;
 }

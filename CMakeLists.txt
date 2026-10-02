@@ -118,7 +118,7 @@ install(FILES
 # ---- kit（Tier 1 能力层，docs/proposal-kit.md §5）----------------------------
 #
 # 头随 core 分发（include/nostos/kit/）；config 的 JSON 层使用 vendored
-# nlohmann/json（third_party/nlohmann/json.hpp，版本见 DEPENDENCIES.md）。
+# nlohmann/json（third_party/nlohmann/json.hpp，3.11.3，版本钉死）。
 # 消费方：target_link_libraries(x PRIVATE nostos::kit) 拿到全部 include 目录。
 
 add_library(nostos_kit INTERFACE)

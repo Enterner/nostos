@@ -43,6 +43,7 @@ public:
                                       header->abi_version);
         if (tables_.count(id) != 0) throw duplicate_service(name, id);
         tables_.emplace(id, table);
+        names_.emplace(id, std::string{name});
         order_.push_back(id);
     }
 
@@ -50,6 +51,7 @@ public:
         auto it = tables_.find(id);
         if (it == tables_.end()) return false;
         tables_.erase(it);
+        names_.erase(id);  // 键即 id；勿在 erase 后经由迭代器取键（已失效）
         for (auto o = order_.begin(); o != order_.end(); ++o) {
             if (*o == id) {
                 order_.erase(o);
@@ -77,8 +79,38 @@ public:
     // Ids in registration order (introspection/tests).
     const std::vector<std::uint64_t>& ids() const noexcept { return order_; }
 
+    // ---- 枚举（跨 ABI 域的“发现”）-------------------------------------------
+    //
+    // 插件无法知道“现在都发布了谁”——宿主自省（/api/status 类端点）与插件侧
+    // 工具发现（ABI 尾部追加的 published_list，见 nostos_abi.h）都需要枚举。
+    // 名字随条目存储：add() 的 name 从“只在报错里出现”变为注册表的一等数据。
+
+    struct Entry {
+        std::uint64_t id;
+        std::string name;
+    };
+
+    // 当前全部条目（注册顺序；名字是拷贝——宿主侧随手用，无生命周期顾虑）。
+    std::vector<Entry> entries() const {
+        std::vector<Entry> out;
+        out.reserve(order_.size());
+        for (const auto id : order_) {
+            auto it = names_.find(id);
+            out.push_back(Entry{id, it != names_.end() ? it->second : std::string{}});
+        }
+        return out;
+    }
+
+    // 名字的无拷贝借用：指针随条目存活，remove / 重新发布后失效。
+    // ABI 的 published_list thunk 用它把名字指针直接交给插件（调用期/条目期有效）。
+    const std::string* name_of(std::uint64_t id) const noexcept {
+        auto it = names_.find(id);
+        return it == names_.end() ? nullptr : &it->second;
+    }
+
 private:
     std::unordered_map<std::uint64_t, const void*> tables_;
+    std::unordered_map<std::uint64_t, std::string> names_;
     std::vector<std::uint64_t> order_;
 };
 

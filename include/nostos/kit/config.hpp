@@ -3,7 +3,7 @@
 //   内置默认 ← nostos.json ← 环境变量 ← 运行时覆盖
 // + on_change 订阅（解析值变化才触发，回调在调用线程同步执行）。
 //
-// JSON 层使用 vendored nlohmann/json（Tier 1 首个准入，DEPENDENCIES.md 在案）；
+// JSON 层使用 vendored nlohmann/json（Tier 1 首个准入，3.11.3，版本钉死）；
 // 只在 load_file 一处使用——其余部分零依赖。
 //
 // 环境层的变更无通知机制（getenv 无回调），文档已注明：该层的变更不触发 on_change。

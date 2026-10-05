@@ -1,14 +1,13 @@
 #pragma once
-// nostos L1 — compile-time dependency declarations and the static check.
+// nostos L1 — 编译期依赖声明与静态检查。
 //
-// Runtime acquisition (取用即依赖, see context.hpp) already guarantees that a
-// service exists before it is used: acquiring one is what records the edge,
-// and a missing service throws and rolls the activation back. What runtime
-// cannot do is tell you *before* the process starts that a Host was assembled
-// from components whose declared dependencies can never be satisfied. That is
-// this header's job.
+// 运行期取用（取用即依赖，见 context.hpp）已经保证 service 在被使用之前
+// 必然存在：取用本身就是记录依赖边的动作，service 缺失时抛异常并回滚
+// 本次激活。运行期做不到的，是在进程启动*之前*就告诉你：某个 Host 由
+// 一批组件拼装而成，而它们声明的依赖永远无法被满足。这正是本头文件的
+// 职责。
 //
-// A component MAY declare both sides of its dependency contract:
+// 组件可以（MAY）声明其依赖契约的两端：
 //
 //     struct Config {};
 //     struct Frobber {};
@@ -19,43 +18,40 @@
 //         void activate(nostos::Context& ctx);
 //     };
 //
-//     nostos::Host<MyPlugin, OtherPlugin> host;   // checked here, at compile time
+//     nostos::Host<MyPlugin, OtherPlugin> host;   // 在此处做编译期检查
 //
-// Host<Cs...> then enforces three rules over the whole component set:
+// Host<Cs...> 随即对整个组件集合强制三条规则：
 //
-//   1. every Requires is covered by the union of all Provides
-//      (identity = the compile-time name hash, never typeid);
-//   2. a service provided and required under *different* C++ types is an
-//      error, not a debug-only surprise at first acquisition;
-//   3. every provided svc_id is unique, so a name collision or a copy-pasted
-//      name is caught at compile time instead of as a runtime
-//      duplicate_service.
+//   1. 每个 Requires 都被所有 Provides 的并集覆盖
+//      （同一性 = 编译期名字哈希，绝不使用 typeid）；
+//   2. 以*不同* C++ 类型提供与取用同一个 service 是错误，而不是只在
+//      Debug 下、首次取用时才爆出的意外；
+//   3. 每个 svc_id 的提供必须唯一，名字撞车或复制粘贴来的名字在编译期
+//      就被抓住，而不是等到运行期的 duplicate_service。
 //
-// Declaration is opt-in and per component: declare neither Requires nor
-// Provides and the component behaves exactly as before. The rules compare
-// declared Provides only, so in a Host that mixes declaring and non-declaring
-// components the contract must be declared on *both* sides (the provider's
-// Provides and the consumer's Requires) — otherwise the consumer's Requires
-// looks unsatisfied.
+// 声明是可选（opt-in）且按组件生效的：既不声明 Requires 也不声明
+// Provides 的组件，行为与未声明时完全一致。规则只比较已声明的
+// Provides，因此在声明与不声明组件混用的 Host 中，契约必须在*两端*
+// 都声明（提供方的 Provides 与消费方的 Requires）— 否则消费方的
+// Requires 会显得未被满足。
 //
-// Diagnostics: C++20 cannot compute a static_assert message, so the failing
-// instantiation *is* the message — the compiler prints the offending
-// component and service inside the type name:
+// 诊断：C++20 无法计算 static_assert 的消息文本，因此失败的实例化
+// *本身就是*消息 — 编译器会把出问题的组件与 service 打印在类型名里：
 //
 //     error: static assertion failed: nostos: a component's Requires is not
 //            covered by this Host's Provides — ...
 //     note:  while instantiating 'unsatisfied_requirement_error<
 //              MyPlugin, Svc<"nostos.config", Config>, void>'
 //
-// One rendering caveat, measured: MSVC prints the name of a `Svc` as its
-// character codes rather than the literal —
+// NOTE: 渲染上的一个坑。踩过: 实测 MSVC 把 `Svc` 的名字打印成字符码
+// 而非字面量 —
 //     nostos::Svc<nostos::fixed_string<6>{char120,46,115,118,99,0}, int>   // "x.svc"
-// — while GCC/Clang print the literal. The component is always named plainly, so
-// the diagnostic stays usable either way; tests/compile_fail/expect_compile_failure.cmake
-// asserts on both renderings for exactly this reason.
+// — 而 GCC/Clang 打印字面量。组件名总是以明文出现，因此无论哪种渲染
+// 诊断都可用；tests/compile_fail/expect_compile_failure.cmake 正是为此
+// 对两种渲染都做了断言。
 //
-// The declaration shape is validated too: Requires/Provides must be
-// std::tuple<Svc<Name, T>...>.
+// 声明的形式本身也会被校验：Requires/Provides 必须是
+// std::tuple<Svc<Name, T>...>。
 
 #include <array>
 #include <cstddef>
@@ -68,8 +64,8 @@
 
 namespace nostos {
 
-// One service identity: the compile-time name that keys the registry, plus the
-// C++ type behind it (meaningful only inside a single ABI domain).
+// 一个 service 的身份：作为 registry 键的编译期名字，加上其背后的
+// C++ 类型（仅在单个 ABI 域内有意义）。
 template <fixed_string Name, typename T>
 struct Svc {
     using type = T;
@@ -87,13 +83,13 @@ struct is_svc : std::false_type {};
 template <fixed_string N, typename T>
 struct is_svc<Svc<N, T>> : std::true_type {};
 
-// std::tuple of Svc<...> — the only accepted declaration shape.
+// std::tuple of Svc<...> — 唯一被接受的声明形式。
 template <typename T>
 struct is_svc_list : std::false_type {};
 template <typename... S>
 struct is_svc_list<std::tuple<S...>> : std::bool_constant<(is_svc<S>::value && ...)> {};
 
-// Requires/Provides are optional: an undeclared side is the empty list.
+// Requires/Provides 是可选的：未声明的一侧视为空列表。
 template <typename C, typename = void>
 struct requires_of : std::type_identity<std::tuple<>> {};
 template <typename C>
@@ -106,9 +102,9 @@ template <typename C>
 struct provides_of<C, std::void_t<typename C::Provides>>
     : std::type_identity<typename C::Provides> {};
 
-// ---- set algebra over Svc lists ---------------------------------------
+// ---- Svc 列表上的集合运算 ---------------------------------------
 
-// First element of Ss... whose id equals Id; void when there is none.
+// Ss... 中第一个 id 等于 Id 的元素；不存在则为 void。
 template <std::uint64_t Id, typename... Ss>
 struct first_with_id {
     using type = void;
@@ -125,13 +121,13 @@ struct first_in_list;
 template <std::uint64_t Id, typename... Ss>
 struct first_in_list<Id, std::tuple<Ss...>> : first_with_id<Id, Ss...> {};
 
-// true when the provided service P exists and carries exactly R's type.
+// 当被提供的 service P 存在、且类型与 R 完全一致时为 true。
 template <typename P, typename R, bool = std::is_void_v<P>>
 struct types_agree : std::false_type {};
 template <typename P, typename R>
 struct types_agree<P, R, false> : std::bool_constant<std::is_same_v<typename P::type, typename R::type>> {};
 
-// Concatenation of every component's Provides list.
+// 所有组件 Provides 列表的拼接。
 template <typename... Lists>
 struct flatten;
 template <>
@@ -144,7 +140,7 @@ struct flatten<std::tuple<S...>, Rest...> {
         std::declval<std::tuple<S...>>(), std::declval<typename flatten<Rest...>::type>()));
 };
 
-// ---- findings ----------------------------------------------------------
+// ---- 检查结果 ----------------------------------------------------------
 
 struct requirement_ok {
     using type = requirement_ok;
@@ -154,8 +150,8 @@ struct requirement_ok {
     using provided = void;
 };
 
-// A Requires entry that no Provides covers, or — when provided != void — one
-// that is covered under a different C++ type.
+// 未被任何 Provides 覆盖的 Requires 条目；或 — 当 provided != void 时 —
+// 被以不同 C++ 类型覆盖的条目。
 template <typename Plugin, typename Required, typename Provided>
 struct unsatisfied_requirement {
     using type = unsatisfied_requirement;
@@ -181,9 +177,9 @@ struct duplicate_provision {
     using second = Second;
 };
 
-// ---- the scans ---------------------------------------------------------
+// ---- 扫描 ---------------------------------------------------------
 
-// One component's Requires against the host-wide Provides.
+// 用全宿主范围的 Provides 检查单个组件的 Requires。
 template <typename Provided, typename Plugin, typename... Rs>
 struct scan_requires;
 template <typename Provided, typename Plugin>
@@ -208,8 +204,7 @@ struct scan_one;
 template <typename Provided, typename Plugin, typename... Rs>
 struct scan_one<Provided, Plugin, std::tuple<Rs...>> : scan_requires<Provided, Plugin, Rs...> {};
 
-// First unsatisfied requirement across all components. Declaration order
-// decides which offender is reported first.
+// 全部组件中第一个未被满足的 Requires。声明顺序决定先报告哪个违规者。
 template <typename Provided, typename... Cs>
 struct scan_all {
     using type = requirement_ok;
@@ -229,7 +224,7 @@ struct scan_all<Provided, C0, Cs...> {
     using provided = typename type::provided;
 };
 
-// First duplicated provided id.
+// 第一个被重复提供的 id。
 template <typename... Ss>
 struct dup_scan : provision_ok {};
 template <typename S0, typename... Rest>
@@ -248,14 +243,13 @@ struct dup_scan_of;
 template <typename... Ss>
 struct dup_scan_of<std::tuple<Ss...>> : dup_scan<Ss...> {};
 
-// ---- failing instantiations (the actual diagnostics) -------------------
+// ---- 触发失败的实例化（真正的诊断输出） -------------------
 
-// Instantiated only when the matching check fails. The message is fixed
-// (C++20 has no computed static_assert strings); the *type* carries the names
-// the compiler prints, so the offending component and service show up in the
-// instantiation note. The parameters are spelled out one by one rather than
-// passing the finding type through, because compilers print an alias (e.g.
-// Host<...>::check_dependencies::unsatisfied) instead of expanding it.
+// 仅在对应检查失败时才会被实例化。消息文本是固定的（C++20 没有可计算的
+// static_assert 字符串）；承载编译器所打印名字的是*类型*，因而出问题的
+// 组件与 service 会出现在实例化 note 中。模板参数逐个写出而非整体传递
+// finding 类型，因为编译器只打印别名
+// （如 Host<...>::check_dependencies::unsatisfied），不会将其展开。
 template <typename Plugin, typename Service, typename Provided>
 struct unsatisfied_requirement_error {
     static_assert(always_false_v<Plugin, Service, Provided>,
@@ -275,10 +269,10 @@ struct duplicate_provision_error {
 
 }  // namespace detail
 
-// ---- the public analysis surface --------------------------------------
+// ---- 公开的分析接口 --------------------------------------
 //
-// Pure compile-time analysis, exposed so tests and tools can inspect a Host's
-// dependency contract without triggering the errors.
+// 纯编译期分析，供测试与工具在不触发那些错误的前提下检查 Host 的依赖
+// 契约。
 
 namespace di {
 
@@ -292,17 +286,17 @@ inline constexpr bool declares_requires_v = requires { typename C::Requires; };
 template <typename C>
 inline constexpr bool declares_provides_v = requires { typename C::Provides; };
 
-// Requires/Provides must be std::tuple<Svc<Name, T>...> when present.
+// 若声明了 Requires/Provides，则必须是 std::tuple<Svc<Name, T>...>。
 template <typename C>
 inline constexpr bool well_formed_v =
     (!declares_requires_v<C> || detail::is_svc_list<requires_t<C>>::value) &&
     (!declares_provides_v<C> || detail::is_svc_list<provides_t<C>>::value);
 
-// Union of every component's Provides.
+// 所有组件 Provides 的并集。
 template <typename... Cs>
 using provided_t = typename detail::flatten<provides_t<Cs>...>::type;
 
-// Analysis results, each with ::found plus the offending types.
+// 分析结果，各带 ::found 与违规类型。
 template <typename... Cs>
 using unsatisfied_t = typename detail::scan_all<provided_t<Cs...>, Cs...>::type;
 template <typename... Cs>
@@ -311,8 +305,8 @@ using duplicate_t = typename detail::dup_scan_of<provided_t<Cs...>>::type;
 template <typename... Cs>
 inline constexpr bool consistent_v = !unsatisfied_t<Cs...>::found && !duplicate_t<Cs...>::found;
 
-// A component's declared ids as a value: HostCore uses it to keep
-// Context::provide honest against the declaration.
+// 以值的形式给出某组件声明的 id 列表：HostCore 用它约束
+// Context::provide 不得超出声明。
 template <typename List>
 struct id_list;
 template <typename... S>

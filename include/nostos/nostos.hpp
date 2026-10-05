@@ -1,11 +1,11 @@
 #pragma once
-// nostos — umbrella header for host code.
+// nostos —— 面向 host 代码的总头文件（umbrella header）。
 //
-// Not included by nostos/loader.hpp or nostos/abi/plugin.hpp on purpose:
-//   * a host that loads plugins adds "nostos/loader.hpp" (and links
-//     nostos::loader, the one compiled part of the library);
-//   * a *plugin* includes only "nostos/abi/plugin.hpp" plus the shared
-//     interface headers, so it stays small and needs no host-side machinery.
+// 刻意不被 nostos/loader.hpp 或 nostos/abi/plugin.hpp 包含：
+//   * 要加载 plugin 的 host 自行添加 "nostos/loader.hpp"（并链接 nostos::loader，
+//     库里唯一需要编译的部分）；
+//   * *plugin* 只包含 "nostos/abi/plugin.hpp" 加共享的 interface 头，
+//     因此保持精简，不需要 host 侧的机制。
 
 #include "nostos/abi/nostos_abi.h"
 #include "nostos/abi/host_api.hpp"

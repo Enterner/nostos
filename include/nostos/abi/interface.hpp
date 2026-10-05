@@ -1,31 +1,27 @@
 #pragma once
-// nostos L2 — published service interface tables (the COM-style half of the
-// dynamic boundary; docs/design.md §4.7).
+// nostos L2 —— published 服务接口表（动态边界的 COM 风格那一半；
+// docs/design.md §4.7）。
 //
-// A *published service* is a plain C struct whose first member is a
-// nostos::abi::TableHeader, followed by function pointers. Both sides of the
-// boundary include the same small shared header that declares it, so a plugin
-// built by a different compiler (the MinGW-plugin ↔ MSVC-host case) can call
-// through the table without sharing a single C++ type: the layout is C, the
-// identity is the fnv1a-64 service id, and nobody ever crosses the boundary
-// with a C++ object.
+// *published 服务*是一个普通 C struct：首成员为 nostos::abi::TableHeader，
+// 其后是函数指针。边界两侧包含声明它的同一份小型共享头，因此由不同编译器
+// 构建（MinGW-plugin ↔ MSVC-host 的情形）的 plugin 也能穿过表调用，而不必
+// 共享任何一个 C++ 类型：布局是 C 的，身份是 fnv1a-64 服务 id，没有人会让
+// C++ 对象跨边界。
 //
-//     // shared/logger_iface.h — included by host and plugin alike
+//     // shared/logger_iface.h —— 宿主与 plugin 都包含它
 //     struct LoggerTable {
 //         nostos::abi::TableHeader header;
 //         void (*log)(LoggerTable* self, const char* msg);
 //         int  (*level)(const LoggerTable* self);
 //     };
 //
-// Growth rules (the same discipline as nostos_abi.h, one level down):
-//   * Publisher fills header.struct_size = sizeof(its own struct) and
-//     header.abi_version = the interface revision it implements.
-//   * Consumer requires struct_size >= sizeof(consumer's struct) and
-//     abi_version >= the revision it needs. Fields are only ever appended, so
-//     an old consumer accepts a new publisher, while a new consumer cleanly
-//     refuses an old publisher instead of reading past the end.
-//   * query() never trusts a table it has not gated; a refused table comes
-//     back as NULL rather than as a crash.
+// 增长规则（与 nostos_abi.h 相同的纪律，低一个层级）：
+//   * 发布方填 header.struct_size = sizeof(自己的 struct)，header.abi_version
+//     = 自己实现的接口修订号。
+//   * 消费方要求 struct_size >= sizeof(消费方的 struct)，且 abi_version >=
+//     自己需要的修订号。字段只增不改，所以老消费方接受新发布方，而新消费方
+//     会干净地拒绝老发布方，而不是读越界。
+//   * query() 绝不信任未经门控的表；被拒绝的表以 NULL 返回，而不是崩溃。
 
 #include <concepts>
 #include <cstddef>
@@ -36,15 +32,15 @@
 
 namespace nostos::abi {
 
-// Every published table begins with exactly this. Two uint32_t so the layout
-// is identical in every compiler and on both 32/64-bit targets.
+// 每张 published 表都恰好以此开头。用两个 uint32_t，使布局在每个编译器以及
+// 32/64 位目标上都一致。
 struct TableHeader {
-    std::uint32_t struct_size = 0; /* sizeof(publisher's struct)    */
-    std::uint32_t abi_version = 0; /* interface revision, from 1 up */
+    std::uint32_t struct_size = 0; /* 发布方 struct 的 sizeof */
+    std::uint32_t abi_version = 0; /* 接口修订号，从 1 起 */
 };
 
-// The status enum as text — every diagnostic that reports a nostos_status
-// should say its name, not just its number.
+// 以文本呈现的 status 枚举——每个报告 nostos_status 的诊断都应说出它的名字，
+// 而不只是它的数字。
 inline const char* status_name(nostos_status status) noexcept {
     switch (status) {
         case NOSTOS_OK: return "NOSTOS_OK";
@@ -57,22 +53,21 @@ inline const char* status_name(nostos_status status) noexcept {
     return "NOSTOS_ERR_UNKNOWN";
 }
 
-// True when T looks like a published table: standard layout with a
-// TableHeader member (as_table/init_table assert it is the *first* member, so
-// a reader may inspect struct_size before knowing anything else).
+// T 看起来像一张 published 表时为真：standard layout 且带有 TableHeader 成员
+// （as_table/init_table 断言它是*首个*成员，读取方因此在了解其他任何东西之前
+// 就可以检视 struct_size）。
 template <typename T>
 concept Table = std::is_standard_layout_v<T> && requires(const T& t) {
     { t.header.struct_size } -> std::convertible_to<std::uint32_t>;
     { t.header.abi_version } -> std::convertible_to<std::uint32_t>;
 };
 
-// Publisher side: stamp a table. Call once, before publishing.
+// 发布方侧：为表盖章。发布之前调用一次。
 //
-// Stamping is NOT lifetime: the host registry stores the pointer and never owns
-// the table (published.hpp), so a stamped table that goes out of scope leaves a
-// dangling interface behind — and `as_table` cannot tell. Statics and members
-// live long enough; a local does not. Context::publish_static() makes the
-// compiler check the static-storage case (see P3-4 in docs/known-issues.md).
+// 盖章不等于生命周期管理：宿主注册表保存指针且绝不拥有表（published.hpp），
+// 因此一张离开作用域的已盖章表会留下悬垂的接口——而 `as_table` 无从分辨。
+// static 与成员活得够久；局部变量不行。Context::publish_static() 让编译器
+// 检查 static 存储期的情形（见 docs/known-issues.md 的 P3-4）。
 template <Table T>
 void init_table(T& table, std::uint32_t abi_version = 1) noexcept {
     static_assert(offsetof(T, header) == 0,
@@ -81,39 +76,36 @@ void init_table(T& table, std::uint32_t abi_version = 1) noexcept {
     table.header.abi_version = abi_version;
 }
 
-// Publisher side: a table is publishable only once it was stamped.
+// 发布方侧：表只有盖章之后才可发布。
 template <Table T>
 bool table_is_valid(const T& table) noexcept {
     return table.header.struct_size >= sizeof(TableHeader) &&
            table.header.abi_version != 0;
 }
 
-// Raw (already resolved) table pointer -> typed table, or nullptr when the
-// publisher's revision cannot satisfy this consumer. Two independent gates: the
-// publisher must have filled at least sizeof(T) (struct_size — this is the one
-// that actually prevents reading past the end of the publisher's struct) and must
-// declare at least min_version. min_version defaults to 1, i.e. "any revision";
-// the intent usually described as "I need everything my struct declares" is
-// expressed by the struct_size gate, not by min_version.
+// 裸的（已解析的）表指针 -> 带类型的表；发布方的修订无法满足本消费方时返回
+// nullptr。两道独立的门：发布方必须至少填满 sizeof(T)（struct_size——真正
+// 防止读到发布方 struct 末尾之外的是这道门），并且必须声明至少 min_version。
+// min_version 默认为 1，即“任意修订”；通常被描述为“我要我的 struct 声明的
+// 全部东西”的那种意图，由 struct_size 门表达，而不是由 min_version 表达。
 template <Table T>
 const T* as_table(const void* raw, std::uint32_t min_version = 1) noexcept {
     static_assert(offsetof(T, header) == 0,
                   "nostos: a published table's TableHeader must be its first member");
     if (raw == nullptr) return nullptr;
     const auto* header = static_cast<const TableHeader*>(raw);
-    if (header->struct_size < sizeof(T)) return nullptr;   /* older publisher */
-    if (header->abi_version < min_version) return nullptr; /* older revision  */
+    if (header->struct_size < sizeof(T)) return nullptr;   /* 发布方更老 */
+    if (header->abi_version < min_version) return nullptr; /* 修订更老 */
     return static_cast<const T*>(raw);
 }
 
-// Consumer side: resolve a published service and gate it in one step.
+// 消费方侧：解析 published 服务并一步完成门控。
 template <Table T>
 const T* query(const nostos_host_api* host, std::uint64_t svc_id,
                std::uint32_t min_version = 1) noexcept {
     if (host == nullptr || host->service == nullptr) return nullptr;
-    /* A host built with an older ABI cannot be trusted to fill the fields
-     * this plugin was compiled against; a newer host is fine (growth is
-     * backward compatible, discovered through struct_size). */
+    /* 以更老 ABI 构建的宿主，不能指望它填好本 plugin 编译时所依据的字段；
+     * 更新的宿主没有问题（增长向后兼容，经 struct_size 发现）。 */
     if (host->struct_size < NOSTOS_HOST_API_V1_SIZE) return nullptr;
     if (host->abi_version < NOSTOS_ABI_VERSION) return nullptr;
     return as_table<T>(host->service(svc_id), min_version);

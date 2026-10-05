@@ -16,7 +16,7 @@ extern "C" {
 /* nostos.log.v1 —— kit 日志服务。level: 0=trace 1=debug 2=info 3=warn 4=error；
  * text 为 UTF-8、只在调用期有效。 */
 typedef struct nostos_log_v1 {
-    uint32_t struct_size;   /* sizeof(nostos_log_v1) */
+    uint32_t struct_size;   /* 写入方填充 sizeof(nostos_log_v1) */
     uint32_t abi_version;   /* 1 */
     void* self;             /* 宿主内部状态（借用；随桥存活） */
     void (*say)(void* self, int level, const char* text);

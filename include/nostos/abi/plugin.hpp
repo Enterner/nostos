@@ -1,14 +1,14 @@
 #pragma once
-// nostos L2 — the plugin side of the C ABI boundary (docs/design.md §4.7).
+// nostos L2 —— C ABI 边界的 plugin 侧（docs/design.md §4.7）。
 //
-// A plugin includes this header (plus the shared interface headers of the
-// services it uses), defines one class, and ends the file with NOSTOS_PLUGIN:
+// plugin 包含本头文件（加上它所用服务的共享接口头），定义一个类，然后以
+// NOSTOS_PLUGIN 结束文件：
 //
 //     #include <nostos/abi/plugin.hpp>
-//     #include <nostos/svc_id.hpp>   // for nostos::svc_id / nostos::event_id —
-//                                    // plugin.hpp deliberately does not pull in
-//                                    // the C++ core, so the example needs this
-//                                    // one extra include to compile as written
+//     #include <nostos/svc_id.hpp>   // 为 nostos::svc_id / nostos::event_id ——
+//                                    // plugin.hpp 刻意不引入 C++ 核心，所以
+//                                    // 本示例要按原文编译还需要这一个额外的
+//                                    // include
 //
 //     struct MyPlugin {
 //         static constexpr std::string_view name = "my.plugin";
@@ -16,22 +16,21 @@
 //
 //         nostos_status activate(const nostos::abi::Host& host) {
 //             logger_ = host.service<LoggerTable>(nostos::svc_id<"demo.logger">);
-//             if (logger_ == nullptr) return NOSTOS_ERR_FAILED;   // named, not silent
+//             if (logger_ == nullptr) return NOSTOS_ERR_FAILED;   // 点名报错，不做哑失败
 //             ping_ = host.on<PingEvent>(nostos::event_id<PingEvent>, [this](const void* p) {
 //                 logger_->log(logger_, "ping");
 //             });
 //             return NOSTOS_OK;
 //         }
 //
-//         void deactivate() noexcept { ping_ = {}; }   // every guard is RAII
+//         void deactivate() noexcept { ping_ = {}; }   // 每个 guard 都是 RAII
 //     };
 //
 //     NOSTOS_PLUGIN(MyPlugin)
 //
-// Everything here is exception-free by construction: a plugin's own C++
-// exceptions are caught at the boundary and reported as NOSTOS_ERR_FAILED, and
-// every host capability is gated on struct_size before it is used, so a plugin
-// also loads against an older host.
+// 这里的每一样东西在构造上都是无异常的：plugin 自己的 C++ 异常在边界处被
+// 捕获并报告为 NOSTOS_ERR_FAILED，而且每项宿主能力在使用前都按 struct_size
+// 门控，因此 plugin 也能在更老的宿主上加载。
 
 #include <concepts>
 #include <cstddef>
@@ -45,12 +44,12 @@
 #include "nostos/abi/nostos_abi.h"
 #include "nostos/abi/interface.hpp"
 
-// version packed as the ABI expects: major<<24 | minor<<16 | patch
+// version 按 ABI 预期的格式打包：major<<24 | minor<<16 | patch
 #define NOSTOS_PLUGIN_VERSION(major, minor, patch) \
     ((static_cast<std::uint32_t>(major) << 24) | (static_cast<std::uint32_t>(minor) << 16) | \
      static_cast<std::uint32_t>(patch))
 
-// The one exported symbol. Must be used at file scope, in exactly one TU.
+// 唯一导出的符号。必须在文件作用域、恰好一个 TU 中使用。
 #define NOSTOS_PLUGIN(PLUGIN_TYPE)                                                     \
     extern "C" NOSTOS_EXPORT const ::nostos_plugin_api* nostos_plugin_entry(void) {    \
         return ::nostos::abi::PluginEntry<PLUGIN_TYPE>::api();                         \
@@ -63,15 +62,14 @@
 
 namespace nostos::abi {
 
-// What a plugin sees of the host: the frozen table, wrapped so that a missing
-// or older capability is a compile-time-known branch rather than a bad call.
+// plugin 眼中的宿主：把冻结的表包上一层，使缺失或过旧的能力成为编译期可知
+// 的分支，而不是一次错误的调用。
 class Host {
 public:
     Host() noexcept = default;
     explicit Host(const nostos_host_api* api) noexcept : api_(api) {}
 
-    // Usable at all: the host filled the v1 prefix and speaks at least this
-    // plugin's ABI version.
+    // 是否根本可用：宿主填充了 v1 前缀，且其 ABI 版本不低于本 plugin 所需。
     bool valid() const noexcept {
         return api_ != nullptr && api_->struct_size >= NOSTOS_HOST_API_V1_SIZE &&
                api_->abi_version >= NOSTOS_ABI_VERSION;
@@ -82,11 +80,10 @@ public:
     bool can_publish() const noexcept { return NOSTOS_HOST_HAS(api_, publish); }
     bool can_emit() const noexcept { return NOSTOS_HOST_HAS(api_, emit); }
 
-    // ---- services ---------------------------------------------------------
+    // ---- 服务 ---------------------------------------------------------------
 
-    // Resolve a published table. Returns nullptr when it is absent *or* when
-    // its revision cannot satisfy this plugin — check with the host's log if
-    // the difference matters.
+    // 解析一张 published 表。表不存在*或*其修订无法满足本 plugin 时都返回
+    // nullptr——若两者的差别要紧，借助宿主的日志查看。
     template <Table T>
     const T* service(std::uint64_t svc_id, std::uint32_t min_version = 1) const noexcept {
         if (!valid()) return nullptr;
@@ -97,17 +94,14 @@ public:
         return valid() && api_->service != nullptr ? api_->service(svc_id) : nullptr;
     }
 
-    // Publish this plugin's own table. Ownership stays with the plugin, and
-    // the host revokes it at the end of the activation even if the plugin
-    // forgets; unpublish only to withdraw it earlier.
+    // 发布本 plugin 自己的表。所有权留在 plugin 手中；即便 plugin 忘了，
+    // 宿主也会在激活结束时撤销它；unpublish 只用于提前撤下。
     //
-    // Lifetime rule (same as the host side, see abi/interface.hpp): the registry
-    // never owns the table and cannot check storage duration, so the table must
-    // live at least as long as the activation — a member of the plugin object, or
-    // a static. A local table here dangles the moment activate() returns, and the
-    // session bookkeeping will not notice. The plugin object itself is owned by
-    // the loader for exactly the length of the session, which is why a member
-    // table is the normal shape.
+    // 生命周期规则（与宿主侧相同，见 abi/interface.hpp）：注册表绝不拥有表，
+    // 也无法检查存储期，因此表至少要与激活同寿——作为 plugin 对象的成员，
+    // 或一个 static。局部表在 activate() 返回的那一刻悬垂，会话记账也不会
+    // 察觉。plugin 对象本身由 loader 恰好在会话期间持有，这正是成员表成为
+    // 常规形态的原因。
     nostos_status publish(std::uint64_t svc_id, const void* table) const noexcept {
         if (!can_publish() || api_->publish == nullptr) return NOSTOS_ERR_BAD_STATE;
         return api_->publish(svc_id, table);
@@ -117,13 +111,12 @@ public:
         if (can_publish() && api_->unpublish != nullptr) api_->unpublish(svc_id);
     }
 
-    // ---- poster ------------------------------------------------------------
+    // ---- 投递器 -------------------------------------------------------------
 
-    // Acquire a poster bound to this activation session (proposal-kit §6.1).
-    // Only legal during activate(), where this bridge is installed. A host
-    // that predates the appended slot reports NOSTOS_ERR_BAD_STATE — the same
-    // convention publish() uses for a missing capability — so callers treat
-    // "no poster" uniformly instead of probing struct sizes by hand.
+    // 取用绑定到本次激活会话的投递器（proposal-kit §6.1）。只在 activate()
+    // 期间合法（此时本桥已安装）。没有该追加槽位的宿主报告
+    // NOSTOS_ERR_BAD_STATE——与 publish() 对缺失能力用同一约定——于是调用方
+    // 统一按“没有投递器”处理，不必手工探查 struct 大小。
     nostos_status acquire_poster(struct nostos_poster* out) const noexcept {
         if (!valid() || !NOSTOS_HOST_HAS(api_, acquire_poster) || api_->acquire_poster == nullptr)
             return NOSTOS_ERR_BAD_STATE;
@@ -147,9 +140,9 @@ public:
         return api_->published_list(out, cap);
     }
 
-    // ---- events -----------------------------------------------------------
+    // ---- 事件 ---------------------------------------------------------------
 
-    // A subscription that owns its callable: dropping it unsubscribes.
+    // 拥有自己的可调用对象的订阅：销毁它即退订。
     class Subscription {
     public:
         Subscription() noexcept = default;
@@ -192,8 +185,8 @@ public:
         std::shared_ptr<void> keep_alive_;
     };
 
-    // fn takes the shared-header C struct of the event, valid for this call
-    // only (discipline 5) — copy anything you keep.
+    // fn 收到的是事件的共享头 C struct，仅本次调用有效（纪律 5）——要留存的
+    // 一律拷贝。
     template <typename F>
     Subscription on(std::uint64_t evt_id, F fn) const {
         if (!valid() || api_ == nullptr || api_->on == nullptr) return {};
@@ -203,20 +196,20 @@ public:
         return Subscription{api_, token, std::move(callable)};
     }
 
-    // Raise an event into the host: native listeners see the struct as its
-    // C++ type. Unavailable on a host that predates the appended fields.
+    // 向宿主引发一个事件：原生监听者把该 struct 看作其 C++ 类型。在没有这些
+    // 追加字段的宿主上不可用。
     void emit(std::uint64_t evt_id, const void* payload) const noexcept {
         if (can_emit() && api_->emit != nullptr) api_->emit(evt_id, payload);
     }
 
-    // ---- logging ----------------------------------------------------------
+    // ---- 日志 ---------------------------------------------------------------
 
     void log(int level, const char* msg) const noexcept {
         if (valid() && api_->log != nullptr) api_->log(level, msg);
     }
     void log(int level, std::string_view msg) const noexcept {
-        // The host only promises validity for the duration of the call, so
-        // hand it a NUL-terminated copy and keep that contract obvious.
+        // 宿主只承诺调用期有效，所以交给它一份以 NUL 结尾的拷贝，让这条契约
+        // 一目了然。
         const std::string copy{msg};
         log(level, copy.c_str());
     }
@@ -227,14 +220,14 @@ private:
         try {
             (*static_cast<F*>(user))(payload);
         } catch (...) {
-            // Exceptions never cross the boundary (discipline 2).
+            // 异常绝不跨越边界（纪律 2）。
         }
     }
 
     const nostos_host_api* api_ = nullptr;
 };
 
-// ---- the plugin entry point ------------------------------------------------
+// ---- plugin 入口点 -----------------------------------------------------------
 
 namespace detail {
 
@@ -248,7 +241,7 @@ concept VersionedPlugin = requires {
     { P::version } -> std::convertible_to<std::uint32_t>;
 };
 
-// Materialise the static name as a NUL-terminated string with plugin lifetime.
+// 把静态名字物化为以 NUL 结尾、plugin 生命周期的字符串。
 template <typename P>
 const char* plugin_name() {
     static const std::string owned{std::string_view{P::name}};
@@ -268,10 +261,9 @@ concept HasLoadState = requires(P& p, const void* buf, std::size_t len) {
 template <typename P>
 concept HasDeactivate = requires(P& p) { p.deactivate(); };
 
-// The wrapper calls deactivate() from a noexcept function (PluginEntry::
-// deactivate), so a throwing one would terminate with no diagnostic at all.
-// The static-component side has the mirror-image check on onStop()
-// (host_builder.hpp); this keeps the two lifecycles equally strict.
+// 包装层从 noexcept 函数（PluginEntry::deactivate）里调用 deactivate()，
+// 因此会抛异常的版本将不带任何诊断地 terminate。静态组件一侧对 onStop()
+// 有镜像的检查（host_builder.hpp）；这让两条生命周期同样严格。
 template <typename P>
 concept DeactivateIsNoexcept = !HasDeactivate<P> || requires(P& p) {
     { p.deactivate() } noexcept;
@@ -287,8 +279,8 @@ concept ActivateReturnsVoid = requires(P& p, const Host& host) { p.activate(host
 
 }  // namespace detail
 
-// Turns a plugin class into the frozen C table. The plugin's state is
-// allocated by the plugin and freed by the plugin (discipline 1).
+// 把 plugin 类变成冻结的 C 表。plugin 的状态由 plugin 分配、由 plugin
+// 释放（纪律 1）。
 template <typename P>
 class PluginEntry {
 public:
@@ -319,9 +311,8 @@ public:
     }
 
 private:
-    // A plugin that does not implement state transfer exports NULL rather than
-    // a stomp that always fails: the host can then tell "unsupported" from
-    // "tried and failed" (has_save_state in PluginInfo).
+    // 未实现状态转移的 plugin 导出 NULL，而不是一个永远失败的占位桩：宿主
+    // 因此能区分“不支持”与“试过但失败”（PluginInfo 的 has_save_state）。
     static constexpr auto save_state_slot() noexcept {
         if constexpr (detail::HasSaveState<P>) {
             return &PluginEntry::save_state;
@@ -356,7 +347,7 @@ private:
             std::unique_ptr<P> plugin = std::make_unique<P>();
             if constexpr (detail::ActivateReturnsStatus<P>) {
                 const nostos_status status = plugin->activate(host);
-                if (status != NOSTOS_OK) return status;  // unique_ptr destroys the half-built plugin
+                if (status != NOSTOS_OK) return status;  // unique_ptr 销毁造了一半的 plugin
             } else {
                 plugin->activate(host);
             }
@@ -368,7 +359,7 @@ private:
     }
 
     static nostos_status deactivate(void* state) noexcept {
-        if (state == nullptr) return NOSTOS_OK;  // a stateless plugin is legal
+        if (state == nullptr) return NOSTOS_OK;  // 无状态 plugin 是合法的
         try {
             const std::unique_ptr<P> plugin{static_cast<P*>(state)};
             if constexpr (detail::HasDeactivate<P>) plugin->deactivate();

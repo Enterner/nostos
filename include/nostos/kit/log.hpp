@@ -36,13 +36,13 @@ public:
         sinks_.clear();
     }
 
-    // 全局阈值：level > 阈值 ⇒ 丢弃（不入队、不进 sink）。
+    // 全局阈值：消息级别低于阈值 ⇒ 丢弃（不入队、不进 sink）。
     void set_level(int level) noexcept { level_.store(level, std::memory_order_relaxed); }
     int level() const noexcept { return level_.load(std::memory_order_relaxed); }
 
     // 同步路径：逐 sink 直调（调用线程 = sink 执行线程）。
     // 异步路径（start_async 之后）：入有界队列，后台线程送 sink。
-    // 级别阈值：lv 低于阈值 ⇒ 丢弃（error(4) 阈值放行 warn 及以上）。
+    // 级别阈值：lv 低于阈值 ⇒ 丢弃（error(4) 阈值仅放行 error）。
     void log(std::string_view name, int lv, const std::string& text) {
         if (lv < level()) return;
         const auto line = format(name, lv, text);
@@ -82,7 +82,7 @@ public:
     class Named {
     public:
         Named(Log* log, std::string name) : log_(log), name_(std::move(name)) {}
-        // 注意：Log::trace 等枚举常量与本类方法同名，必须带 Log:: 限定。
+        // NOTE: Log::trace 等枚举常量与本类方法同名，必须带 Log:: 限定。
         void trace(const std::string& m) { emit(Log::trace, m); }
         void debug(const std::string& m) { emit(Log::debug, m); }
         void info(const std::string& m) { emit(Log::info, m); }
@@ -134,7 +134,7 @@ private:
         std::unique_lock<std::mutex> lock(cv_mu_);
         if (policy_ == Overflow::block) {
             cv_.wait(lock, [&] { return !async_ || static_cast<int>(queue_.size()) < max_queue_; });
-            if (!async_) return;  // 停止中的等待者：不再入队
+            if (!async_) return;  // 停止唤醒的等待者：不入队（该条丢弃）
         } else {
             while (static_cast<int>(queue_.size()) >= max_queue_) {
                 queue_.pop_front();

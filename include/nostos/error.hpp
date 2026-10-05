@@ -1,22 +1,19 @@
 #pragma once
-// nostos L0 — the error vocabulary.
+// nostos L0 —— 错误词汇表。
 //
-// Every error the library throws derives from nostos_error, so a host can
-// catch the whole family with one clause while still being able to name the
-// specific failure. Messages are built at throw time and always name the
-// offending entity (service, component, event, plugin path) — this library's
-// diagnostics rule applies to runtime errors exactly as it does to
-// compile-time ones (see di.hpp).
+// 库抛出的每个错误都派生自 nostos_error，host 用一个 catch 子句就能接住整个
+// 家族，同时仍能点名具体是哪种失败。消息在抛出时构造，并且总是指出肇事实体
+// （service、component、event、插件路径）——本库的诊断规则对运行期错误与
+// 编译期错误一视同仁（见 di.hpp）。
 //
-// Each error ALSO carries its identifying data as members with accessors, so a
-// host can act on a failure programmatically instead of parsing what(). That
-// matters for planned work such as Phase 4's PENDING auto-reactivation, where
-// the host has to know *which* service id it is waiting for in order to
-// register a waiter. Humans read what(); programs read the accessors.
+// 每个错误还以成员加访问器的形式携带自己的标识数据，host 可以程序化地处理
+// 失败，而不必解析 what()。这对既定规划中的工作很重要，比如 Phase 4 的
+// PENDING 自动再激活：host 必须知道自己在等的是*哪个* service id，才能注册
+// waiter。人读 what()，程序读访问器。
 //
-// NOTE: nothing in this header may throw out of a dynamic-plugin boundary.
-// The C ABI reports failures through nostos_status instead (nostos_abi.h,
-// discipline 2); these types are for host-side and same-ABI-domain code.
+// NOTE: 本头文件中的任何东西都不得把异常抛出动态插件边界。跨 C ABI 的失败
+// 一律经 nostos_status 上报（nostos_abi.h，纪律 2）；这些类型供 host 侧与
+// 同一 ABI 域内的代码使用。
 
 #include <cstddef>
 #include <cstdint>
@@ -41,10 +38,10 @@ inline std::string hex64(std::uint64_t v) {
     return buf;
 }
 
-// Every "named service + id" message has the same shape:
+// 所有"具名 service + id"的消息都共享同一个形状：
 //   <prefix><name>' (<id>)<suffix>
-// Keeping it in one place means the text cannot drift between the error types
-// (and the tests that assert on it keep working).
+// 收拢在一处，文案就不会在各错误类型之间漂移（对它做断言的测试也因此一直
+// 有效）。
 inline std::string quoted_id_message(std::string_view prefix, std::string_view name,
                                      std::uint64_t id, std::string_view suffix) {
     return std::string(prefix) + std::string(name) + "' (" + hex64(id) + ")" + std::string(suffix);
@@ -59,13 +56,13 @@ public:
           name_(name),
           id_(id) {}
 
-    // What the host needs to register a waiter (Phase 4 PENDING) or to route a
-    // failure by service: the same id the registry is keyed by.
+    // host 注册 waiter（Phase 4 PENDING）或按 service 路由失败所需的东西：
+    // 与 registry 的键完全相同的 id。
     std::string_view service_name() const noexcept { return name_; }
     std::uint64_t service_id() const noexcept { return id_; }
 
 private:
-    std::string name_;  // owned: the caller may hand us a view of a temporary
+    std::string name_;  // 自有拷贝：调用方递过来的可能是临时对象的 view
     std::uint64_t id_ = 0;
 };
 
@@ -97,22 +94,20 @@ public:
 
     std::string_view service_name() const noexcept { return name_; }
 
-    // NOTE: these are std::type_info::name() spellings — implementation
-    // defined (MSVC prints "struct A", GCC prints a mangled name). They are
-    // meaningful only inside one ABI domain, exactly like the check that threw.
+    // NOTE: 这些是 std::type_info::name() 的拼写——实现定义（MSVC 打印
+    // "struct A"，GCC 打印修饰名）。只在同一个 ABI 域内有意义，与抛出该错误
+    // 的检查完全相同。
     std::string_view requested_type() const noexcept { return requested_; }
     std::string_view registered_type() const noexcept { return registered_; }
 
 private:
     std::string name_;
-    std::string_view requested_;   // type_info::name() has static lifetime
+    std::string_view requested_;   // type_info::name() 具有静态生存期
     std::string_view registered_;
 };
 
-// A component that declares Provides (see di.hpp) registered a service its
-// declaration does not list: the declared contract and the implementation
-// have drifted apart. The compile-time check cannot see this, so it is
-// enforced at registration time.
+// 声明了 Provides（见 di.hpp）的 component 注册了一个其声明未列出的 service：
+// 声明的契约与实现脱节了。编译期检查看不见这件事，因此在注册期强制。
 class undeclared_provide : public nostos_error {
 public:
     undeclared_provide(std::string_view name, std::size_t component)
@@ -129,10 +124,8 @@ private:
     std::size_t component_ = 0;
 };
 
-// A component acquired a service whose id its Requires declaration does not
-// list at all. Mirror image of undeclared_provide: the declared contract and
-// the implementation have drifted apart, and the compile-time check cannot see
-// a call site.
+// component 取用了一个其 Requires 声明完全未列出该 id 的 service。
+// undeclared_provide 的镜像：声明的契约与实现脱节，而编译期检查看不见调用点。
 class undeclared_require : public nostos_error {
 public:
     undeclared_require(std::string_view name, std::size_t component)
@@ -149,11 +142,10 @@ private:
     std::size_t component_ = 0;
 };
 
-// The component DID declare this id, but under a different C++ type than the
-// call site asks for — `Requires = Svc<"x", A>` while calling
-// `service<"x", B>()`. di.hpp checks declarations against each other; nothing
-// but this check can compare a declaration with the call site. Without it the
-// mismatch would silently reinterpret memory in a release build.
+// component 确实声明了这个 id，但声明的 C++ 类型与调用点要求的不同——
+// `Requires = Svc<"x", A>` 而调用的是 `service<"x", B>()`。di.hpp 检查的是
+// 声明与声明之间；能把声明与调用点对起来的只有这一处检查。没有它，release
+// 构建里这种不匹配会无声地重解释内存。
 class declared_type_mismatch : public nostos_error {
 public:
     declared_type_mismatch(std::string_view name, std::size_t component,
@@ -169,8 +161,8 @@ public:
     std::string_view service_name() const noexcept { return name_; }
     std::size_t component_index() const noexcept { return component_; }
 
-    // type_info::name() spellings (implementation defined), meaningful only
-    // inside one ABI domain — same caveat as type_mismatch.
+    // type_info::name() 的拼写（实现定义），只在同一个 ABI 域内有意义——
+    // 注意事项同 type_mismatch。
     std::string_view declared_type() const noexcept { return declared_; }
     std::string_view requested_type() const noexcept { return requested_; }
 
@@ -181,17 +173,15 @@ private:
     std::string_view requested_;
 };
 
-// A published table failed validation at registration time. The registry
-// refuses unstamped tables outright, so this is a hard contract violation at the
-// boundary rather than a recoverable state — but it still names what is wrong
-// and carries the offending value, so a host can report it without string
-// matching.
+// published table 在注册期未通过校验。registry 直接拒收未盖章的表，因此这是
+// 边界上的硬性契约违约，不是可恢复状态——但它仍然指名错在何处并携带肇事值，
+// host 上报时无需做字符串匹配。
 class bad_published_table : public nostos_error {
 public:
     enum class Reason {
-        null_table,   // no table pointer at all
-        struct_size,  // struct_size does not even cover the TableHeader
-        abi_version,  // abi_version == 0: the table was never stamped
+        null_table,   // 压根没有表指针
+        struct_size,  // struct_size 连 TableHeader 都盖不住
+        abi_version,  // abi_version == 0：表从未被盖章
     };
 
     bad_published_table(std::string_view name, Reason reason, std::uint32_t value = 0)
@@ -202,8 +192,8 @@ public:
 
     std::string_view service_name() const noexcept { return name_; }
     Reason reason() const noexcept { return reason_; }
-    // struct_size for Reason::struct_size, abi_version for Reason::abi_version,
-    // 0 for null_table.
+    // Reason::struct_size 时为 struct_size，Reason::abi_version 时为
+    // abi_version，null_table 时为 0。
     std::uint32_t offending_value() const noexcept { return value_; }
 
 private:
@@ -227,17 +217,16 @@ private:
     std::uint32_t value_ = 0;
 };
 
-// Calling a Host entry point out of order (start() twice, activate() before
-// start(), re-activating a live component). This is misuse of the host's own
-// API, not a component failure — which is why it does not travel through the
-// component's scope rollback. The component index is carried when the call
-// concerned one.
+// 不按顺序调用 Host 入口（start() 两次、start() 之前 activate()、对存活的
+// component 再次激活）。这是对 host 自身 API 的误用，不是 component 的失败
+// ——因此它不经过 component 的 scope 回滚。调用涉及某个 component 时会带上
+// 其索引。
 class host_state_error : public nostos_error {
 public:
     enum class Reason {
-        already_started,  // start() on a fully activated host
-        not_started,      // activate(index) with the host not started
-        already_active,   // activate(index) on a live component
+        already_started,  // 对已完全激活的 host 调 start()
+        not_started,      // host 未启动就调 activate(index)
+        already_active,   // 对存活的 component 调 activate(index)
     };
 
     static constexpr std::size_t no_component = static_cast<std::size_t>(-1);
@@ -265,9 +254,8 @@ private:
     std::size_t component_ = no_component;
 };
 
-// Two different payload types share one event name. The raw channel keys on
-// the name hash, so dispatching a plugin's payload through the wrong bus
-// would reinterpret C++ types; refuse instead of corrupting memory.
+// 两个不同的载荷类型共用一个 event 名。raw 通道按名字哈希作键，把插件的载荷
+// 派发进错误的 bus 会重解释 C++ 类型；宁可拒绝，也不损坏内存。
 class event_name_collision : public nostos_error {
 public:
     event_name_collision(std::string_view name, std::uint64_t id)
@@ -277,8 +265,8 @@ public:
           id_(id) {}
 
     std::string_view event_name() const noexcept { return name_; }
-    // Not named event_id(): that would shadow nostos::event_id<E> inside this
-    // class (and inside any class deriving from it).
+    // 不命名为 event_id()：那会在本类（以及任何派生类）内遮蔽
+    // nostos::event_id<E>。
     std::uint64_t event_id_value() const noexcept { return id_; }
 
 private:
@@ -286,8 +274,8 @@ private:
     std::uint64_t id_ = 0;
 };
 
-// Loading, validating or driving a dynamic plugin failed. The message carries
-// the OS error text or the ABI mismatch, never a bare code.
+// 加载、校验或驱动动态插件失败。消息携带 OS 错误文本或 ABI 不匹配的说明，
+// 绝不是裸状态码。
 class plugin_error : public nostos_error {
 public:
     using nostos_error::nostos_error;

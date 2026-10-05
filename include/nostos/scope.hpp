@@ -1,15 +1,13 @@
 #pragma once
-// nostos L0 — Scope, the owner of reversible side effects.
+// nostos L0 —— Scope，可逆副作用的所有者。
 //
-// Guards and child scopes are appended in creation order; teardown destroys
-// them strictly in reverse (LIFO). Because a component's activation sequence
-// is a topological order (a service must be provided before it can be
-// acquired — see Context), the reverse of that sequence is always a safe
-// destruction order. There is no runtime dependency graph: the invariant is
-// enforced by construction.
+// guard 与子 scope 按创建顺序尾部追加；teardown 严格按逆序（LIFO）销毁它们。
+// 组件的激活序列是一个拓扑序（service 必须先被提供才能被取用——见 Context），
+// 因此该序列的逆序必然是安全的销毁顺序。运行期没有依赖图：不变量靠构造方式
+// 保证。
 //
-// A Scope is non-copyable and non-movable so that references returned by
-// spawn() and own() stay valid for the Scope's lifetime.
+// Scope 不可拷贝、不可移动，使 spawn() 与 own() 返回的引用在 Scope 的整个
+// 生命周期内保持有效。
 
 #include <algorithm>
 #include <cstddef>
@@ -34,9 +32,8 @@ public:
 
     ~Scope() override { reset(); }
 
-    // Take exclusive ownership of a guard. Pass an rvalue (std::move) or a
-    // copyable guard; returns a reference to the boxed guard, valid until the
-    // scope unwinds.
+    // 取得 guard 的独占所有权：传右值（std::move）或可拷贝的 guard。返回装箱
+    // 后 guard 的引用，在 scope unwind 之前有效。
     template <typename G>
         requires Ownable<G>
     std::decay_t<G>& own(G&& g) {
@@ -50,30 +47,27 @@ public:
         return ref;
     }
 
-    // Poison overload. For a guard that is not Ownable, the constrained overload
-    // above is simply not a candidate — what the user sees is a concept mismatch
-    // ("no matching overload", "the concept Ownable<X> evaluated to false")
-    // instead of the reason. This overload makes the reason reachable: by
-    // construction, reaching its body is already an error, so the message below
-    // is what gets printed.
+    // 毒化重载（poison overload）。guard 不满足 Ownable 时，上面那个受约束的
+    // 重载根本不会进入候选集——用户看到的只是概念不匹配（"no matching
+    // overload"、"the concept Ownable<X> evaluated to false"），看不到真正
+    // 的原因。这个重载让原因变得可见：能走到它的函数体本身就已是错误，所以
+    // 最终打印出来的是下面这条信息。
     template <typename G>
         requires (!Ownable<G>)
     std::decay_t<G>& own(G&&) {
-        // This overload is selected only when Ownable<G> is false, so asserting
-        // the opposite is precisely the diagnostic — and it is dependent on G,
-        // so it fires on instantiation rather than at definition time.
+        // 该重载只在 Ownable<G> 为 false 时被选中，因此断言其反面恰恰就是
+        // 诊断本身；断言依赖 G，所以在实例化时触发，而不是定义时。
         static_assert(Ownable<G>,
                       "nostos::Scope::own needs a guard that is either an ExplicitDisposer "
                       "(has a dispose() member) or a move-only RAII type. A copyable type "
                       "without dispose() would be released twice — once from the box and "
                       "once from the source; anything else is not a guard at all.");
-        std::abort();  // unreachable: the assertion above always fails
+        std::abort();  // 不可达：上面的断言必然失败
     }
 
-    // Convenience layer: a nullary callable becomes a disposable unit.
-    // A throwing callable terminates the process — rollback must not fail.
-    // (move_constructible, not nothrow-move: value-capturing `const` locals
-    // makes a closure's move fall back to copying — too common to reject.)
+    // 便利层：无参可调用对象变成一个可释放单元。可调用对象抛异常即终止进程
+    // ——回滚不许失败。（要求 move_constructible 而非 nothrow-move：按值捕获
+    // `const` 局部量会让闭包的移动退化为拷贝——太常见，不宜拒绝。）
     template <typename F>
         requires std::move_constructible<std::decay_t<F>> &&
                  std::invocable<std::decay_t<F>&>
@@ -82,8 +76,8 @@ public:
             std::make_unique<detail::DeferBox<std::decay_t<F>>>(std::decay_t<F>(std::forward<F>(fn))));
     }
 
-    // Create a child scope owned by this one; it unwinds at its position in
-    // the parent's LIFO order, cascading to the child's own contents.
+    // 创建一个由本 Scope 持有的子 scope；它在父 LIFO 顺序中的位置上 unwind，
+    // 并级联到子 scope 自己的内容。
     Scope& spawn() {
         auto child = std::make_unique<Scope>();
         Scope& ref = *child;
@@ -91,13 +85,13 @@ public:
         return ref;
     }
 
-    // Unwind everything in reverse creation order. Idempotent, noexcept.
+    // 按创建的逆序 unwind 全部内容。幂等，noexcept。
     void reset() noexcept {
         while (!owned_.empty()) {
             std::unique_ptr<Disposable> box = std::move(owned_.back());
             owned_.pop_back();
-            box->dispose();  // dispose-flavor release
-            box.reset();     // destroy the box → dtor-flavor release
+            box->dispose();  // dispose 风格的释放
+            box.reset();     // 析构 box ⇒ dtor 风格的释放
         }
     }
 

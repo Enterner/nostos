@@ -4,7 +4,7 @@
 //
 // 纪律：ABI 事件载荷里的 `const char*` 只保证**调用期有效**——载荷字符串必须
 // 比 emit 调用活得更久。临时字符串直接 `.c_str()` 是悬垂：emit 返回前临时
-// 已析构，宿主读到已释放堆（vibecode M6 真实踩过：agent 的
+// 已析构，宿主读到已释放堆（踩过: 插件侧 agent——
 // `trim(brief, 200).c_str()` 在 ToolResult 语句内失效 ⇒ printf 读到不定内容，
 // 回归 golden 跨运行不一致）。
 //

@@ -1,14 +1,12 @@
-// nostos L2 — the platform half of the loader. Everything that touches
-// <windows.h>, <dlfcn.h> or the process image lives here so that
-// nostos/loader.hpp can stay clean for every translation unit that includes
-// it (see the header comment there).
+// nostos L2 —— loader 的平台部分。所有触及 <windows.h>、<dlfcn.h> 或进程映像的
+// 代码都住在这里，nostos/loader.hpp 因此对包含它的每个翻译单元保持干净
+// （见该头的头注释）。
 //
-// Include order matters, do not "tidy" it: every nostos header comes first and
-// <windows.h> comes last. A full <windows.h> drags in the COM headers, whose
-// `#define interface struct` would break nostos::Context::interface, and it
-// puts Win32 API names into the global namespace where they collide with
-// ordinary identifiers. WIN32_LEAN_AND_MEAN avoids pulling in the COM half;
-// the ordering is what makes the rest safe (see README, 设计纪律 6).
+// include 顺序很重要，不要"整理"它：所有 nostos 头在最前，<windows.h> 在最后。
+// 完整的 <windows.h> 会拖进 COM 头，其中的 `#define interface struct` 会破坏
+// nostos::Context::interface；它还会把 Win32 API 名字放进全局命名空间，与普通
+// 标识符相撞。WIN32_LEAN_AND_MEAN 避免拉进 COM 那一半；而顺序安排正是其余部分
+// 得以安全的原因（见 README，设计纪律 6）。
 
 #include "nostos/loader.hpp"
 
@@ -17,6 +15,7 @@
 
 #include <cctype>
 #include <cstddef>
+#include <cstdio>
 #include <string_view>
 #include <system_error>
 #include <utility>
@@ -63,14 +62,11 @@ std::string to_utf8(const std::wstring& wide) {
 
 std::string last_error_text(const std::string& path) {
     const auto code = static_cast<int>(::GetLastError());
-    // Windows message templates carry positional parameters (%1, %2 …) and
-    // std::system_category().message() cannot fill them: it hands back the text
-    // with the placeholder intact — "%1 is not a valid Win32 application.".
-    // FormatMessageW(FORMAT_MESSAGE_ARGUMENT_ARRAY) does substitute, but it also
-    // renders the text in the system UI language, so the OS half of our
-    // diagnostics would change language from machine to machine. Substitute
-    // textually instead: for the LoadLibrary failures reported here, %1 IS the
-    // module path.
+    // Windows 的消息模板带位置参数（%1、%2 …），而 std::system_category().message()
+    // 填不了它们：返回的文本里占位符原样保留——"%1 is not a valid Win32
+    // application."。FormatMessageW(FORMAT_MESSAGE_ARGUMENT_ARRAY) 确实能替换，
+    // 但它同时会以系统 UI 语言渲染文本，那样诊断信息里 OS 的那一半就会因机器
+    // 而异。所以这里用文本替换：对这里报告的 LoadLibrary 失败，%1 就是模块路径。
     std::string text = std::system_category().message(code);
     for (std::size_t pos = text.find("%1"); pos != std::string::npos;
          pos = text.find("%1", pos + path.size())) {
@@ -80,15 +76,14 @@ std::string last_error_text(const std::string& path) {
 }
 
 void* platform_open(const std::string& path, std::string* error) {
-    // LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR: a plugin's own dependencies are looked
-    // for next to the plugin, not only next to the host executable.
+    // LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR：plugin 自身的依赖在 plugin 旁边查找，
+    // 而不只是 host 可执行文件旁边。
     //
-    // A cross-toolchain plugin (MinGW-built, MSVC host) usually needs its own
-    // runtime DLLs (libstdc++-6.dll, libgcc_s_seh-1.dll, ...) from a directory
-    // that is on PATH but is *not* one of the flagged search paths, so the
-    // modern call is retried with the legacy search as a fallback. That makes
-    // "put the plugin's toolchain runtime on PATH" work, which is the least
-    // surprising thing for a plugin author.
+    // 跨工具链的 plugin（MinGW 构建、MSVC host）通常需要自己那套运行时 DLL
+    // （libstdc++-6.dll、libgcc_s_seh-1.dll、……），它们所在的目录虽然在 PATH
+    // 上，却*不是*上述标志覆盖的搜索路径，所以现代调用失败时会退回旧式搜索
+    // 重试。这样"把 plugin 工具链的运行时放进 PATH"就能成立——对 plugin 作者
+    // 来说这是最不意外的做法。
     const std::wstring wide = to_wide(path);
     HMODULE module = ::LoadLibraryExW(wide.c_str(), nullptr,
                                       LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR |
@@ -118,7 +113,7 @@ std::string platform_executable_directory() {
             buffer.resize(written);
             break;
         }
-        buffer.resize(buffer.size() * 2);  // truncated: grow and retry
+        buffer.resize(buffer.size() * 2);  // 被截断：扩容后重试
     }
     const std::size_t slash = buffer.find_last_of(L"\\/");
     if (slash == std::wstring::npos) return {};
@@ -127,9 +122,8 @@ std::string platform_executable_directory() {
 
 const char* platform_module_extension() noexcept { return ".dll"; }
 
-// Windows file names are case-insensitive, so "x.DLL" already carries the
-// extension and must not get a second one appended (that produced a path that
-// does not exist, reported as "module could not be found").
+// NOTE: Windows 文件名大小写不敏感，"x.DLL" 已带扩展名，不能再追加第二个。
+// 踩过: 追加第二个扩展名拼出不存在的路径，报错为"找不到模块"。
 bool platform_name_has_extension(std::string_view name) noexcept {
     const std::string_view extension = platform_module_extension();
     if (name.size() < extension.size()) return false;
@@ -145,7 +139,7 @@ bool platform_name_has_extension(std::string_view name) noexcept {
 #else  // POSIX
 
 void* platform_open(const std::string& path, std::string* error) {
-    ::dlerror();  // clear any stale error
+    ::dlerror();  // 清掉上次残留的错误状态
     void* handle = ::dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
     if (handle == nullptr && error != nullptr) {
         const char* message = ::dlerror();
@@ -187,8 +181,7 @@ const char* platform_module_extension() noexcept {
 #  endif
 }
 
-// POSIX file names are case-sensitive — ".SO" really is a different file — so
-// this stays an exact comparison.
+// POSIX 文件名大小写敏感——".SO" 确实是另一个文件——所以这里保持精确比较。
 bool platform_name_has_extension(std::string_view name) noexcept {
     const std::string_view extension = platform_module_extension();
     return name.size() >= extension.size() &&
@@ -205,13 +198,12 @@ std::string plugin_module_path(std::string_view name) {
     std::string path = platform_executable_directory();
     if (!path.empty()) path += '/';
     path.append(name);
-    // Whether the name already carries the extension is a platform question:
-    // case-insensitive on Windows, exact on POSIX.
+    // 名字是否已带扩展名是平台问题：Windows 上大小写不敏感，POSIX 上精确匹配。
     if (!platform_name_has_extension(name)) path += platform_module_extension();
     return path;
 }
 
-// unpack_version 现在定义在 abi/plugin_info.hpp（inline）：静态链接插件的宿主也要用它，
+// unpack_version 定义在 abi/plugin_info.hpp（inline）：静态链接插件的宿主也要用它，
 // 而那时不该有 loader 被链接进来。
 
 // ---- DynamicLibrary --------------------------------------------------------
@@ -281,7 +273,7 @@ DynamicPlugin& DynamicPlugin::operator=(DynamicPlugin&& other) noexcept {
 DynamicPlugin DynamicPlugin::load(const std::string& path) {
     DynamicLibrary library = DynamicLibrary::open(path);
 
-    // Only this one symbol ever crosses: a C function returning a C table.
+    // 穿越边界的自始至终只有这一个符号：一个返回 C 表的 C 函数。
     const auto entry = reinterpret_cast<PluginEntryFn>(library.symbol(kEntrySymbol));
     if (entry == nullptr)
         throw plugin_error("nostos: plugin '" + path + "' does not export " + kEntrySymbol +

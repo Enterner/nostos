@@ -1,22 +1,19 @@
 #pragma once
-// nostos L2 — dynamic plugin loading (docs/design.md §4.7, §7 Phase 3).
+// nostos L2 —— 动态 plugin 加载（docs/design.md §4.7, §7 Phase 3）。
 //
-// A plugin is a shared library exporting one symbol, nostos_plugin_entry(),
-// which returns a frozen C function table (nostos_abi.h). Nothing about the
-// plugin's own C++ — its allocator, its RTTI, its std::string — crosses the
-// boundary, which is what makes the "MinGW plugin ↔ MSVC host" case work at
-// all.
+// 一个 plugin 是一个只导出一个符号的共享库：nostos_plugin_entry()，它返回一张
+// 冻结的 C 函数表（nostos_abi.h）。plugin 自己的 C++ 设施——allocator、RTTI、
+// std::string——一概不穿越边界，这正是 "MinGW plugin ↔ MSVC host" 的场景能够
+// 成立的根本原因。
 //
-// This header is the host-facing half and deliberately includes no platform
-// header: <windows.h> would leak its macros into every translation unit that
-// loads a plugin. The platform code lives in src/loader/loader.cpp, and the
-// header-only core stays header-only.
+// 本头文件是面向 host 的一半，刻意不包含任何平台头：<windows.h> 会把它的宏泄漏
+// 进每个加载 plugin 的翻译单元。平台代码住在 src/loader/loader.cpp，header-only
+// 的核心保持 header-only。
 //
-// Unload semantics (docs/design.md §4.6): deactivate() is the *logical* unload
-// — the plugin tears its world down, the host revokes what the plugin
-// published, and the code stays mapped. Unmapping is explicit (unload() or the
-// destructor) because a plugin cannot be safely unmapped while anything it
-// handed out, or any thread it started, is still reachable.
+// 卸载语义（docs/design.md §4.6）：deactivate() 是*逻辑*卸载——plugin 拆掉自己的
+// 世界，host 撤销 plugin 发布过的东西，代码保持映射。unmap 是显式动作（unload()
+// 或析构函数）：只要 plugin 交出去的任何东西、或它启动的任何线程仍然可达，
+// plugin 就无法被安全地 unmap。
 
 #include <cstdint>
 #include <string>
@@ -35,18 +32,17 @@ namespace abi {
 class HostBridge;
 }
 
-// Directory of the running executable — where plugin modules normally sit.
+// 正在运行的可执行文件所在目录——plugin 模块通常就放在这里。
 std::string executable_directory();
 
-// Path of a plugin module next to the executable: `name` gets the platform's
-// module extension appended unless it already has one.
+// 可执行文件旁边的 plugin 模块路径：`name` 未带平台模块扩展名时自动补上。
 std::string plugin_module_path(std::string_view name);
 
-// "major.minor.patch" for a version packed as (major<<24|minor<<16|patch)。
+// 把按 (major<<24|minor<<16|patch) 打包的版本号解成 "major.minor.patch"。
 // 实现在 abi/plugin_info.hpp（inline）—— 静态链接插件也要用它，而那时不该有 loader。
 inline std::string unpack_version(std::uint32_t packed) { return abi::unpack_version(packed); }
 
-// RAII handle to a shared library.
+// 共享库的 RAII 句柄。
 class DynamicLibrary {
 public:
     DynamicLibrary() noexcept = default;
@@ -57,20 +53,19 @@ public:
     DynamicLibrary(const DynamicLibrary&) = delete;
     DynamicLibrary& operator=(const DynamicLibrary&) = delete;
 
-    // Throws plugin_error carrying the OS error text when the module cannot be
-    // loaded (missing file, wrong architecture, missing dependency).
+    // 模块无法加载（缺文件、架构不符、缺依赖）时抛出携带 OS 错误文本的
+    // plugin_error。
     static DynamicLibrary open(const std::string& path);
 
     bool is_open() const noexcept { return handle_ != nullptr; }
     explicit operator bool() const noexcept { return is_open(); }
 
-    // nullptr when the module does not export the symbol.
+    // 模块未导出该符号时为 nullptr。
     void* symbol(const char* name) const noexcept;
 
     const std::string& path() const noexcept { return path_; }
 
-    // Physical unmap. Best-effort and idempotent; the caller guarantees that
-    // no code or data of this module is reachable any more.
+    // 物理 unmap。尽力而为且幂等；调用方保证本模块已无任何代码或数据可达。
     void close() noexcept;
 
 private:
@@ -78,10 +73,10 @@ private:
     std::string path_;
 };
 
-// PluginInfo 现在住在 abi/plugin_info.hpp（动态加载与静态链接两种模式共用同一份）；
+// PluginInfo 定义在 abi/plugin_info.hpp（动态加载与静态链接两种模式共用同一份）；
 // nostos::PluginInfo 这个名字保持不变（见那个头里的 using）。
 
-// A loaded plugin module. Move-only: exactly one owner drives the lifecycle.
+// 已加载的 plugin 模块。Move-only：生命周期恰好由一个所有者驱动。
 class DynamicPlugin {
 public:
     DynamicPlugin() noexcept = default;
@@ -92,9 +87,8 @@ public:
     DynamicPlugin(const DynamicPlugin&) = delete;
     DynamicPlugin& operator=(const DynamicPlugin&) = delete;
 
-    // Loads the module and validates the exported table (struct_size,
-    // abi_version, required fields). Throws plugin_error naming both the path
-    // and what was wrong with it.
+    // 加载模块并校验导出的表（struct_size、abi_version、必填字段）。抛出的
+    // plugin_error 会同时给出路径与问题所在。
     static DynamicPlugin load(const std::string& path);
 
     const PluginInfo& info() const noexcept { return session_.info(); }
@@ -106,24 +100,21 @@ public:
     // 未加载时为 NULL。
     const nostos_plugin_api* api() const noexcept { return session_.api(); }
 
-    // Hand the plugin the host table and let it wire itself up. Throws
-    // plugin_error when the plugin reports failure; a failed activation leaves
-    // no residue (nothing it published survives, per the ABI contract).
+    // 把 host 表交给 plugin，让它自行接线。plugin 报告失败时抛 plugin_error；
+    // 失败的激活不留残余（按 ABI 契约，它发布的任何东西都不会存留）。
     void activate(abi::HostBridge& host);
 
-    // Logical unload: roll back the host components that depend on what the
-    // plugin published, tell the plugin to release everything, and forget its
-    // publications. noexcept and idempotent — teardown must not fail.
+    // 逻辑卸载：回滚 host 中依赖该 plugin 发布物的组件，要求 plugin 释放一切，
+    // 并忘掉它的发布记录。noexcept 且幂等——teardown 不允许失败。
     void deactivate() noexcept;
 
-    // Optional state transfer (hot reload, Phase 4). Returns false when the
-    // plugin does not support it. Never serialises across the boundary: the
-    // buffer is host-owned and copied.
+    // 可选的状态转移（热重载，Phase 4）。plugin 不支持时返回 false。绝不跨边界
+    // 序列化：缓冲区归 host 所有，做的是拷贝。
     bool save_state(void* buf, std::size_t capacity, std::size_t* out_len) const noexcept;
     bool load_state(const void* buf, std::size_t len) noexcept;
 
-    // Physical unmap: deactivate() first, then close the library. noexcept;
-    // the module stays mapped if it was never deactivated successfully.
+    // 物理 unmap：先 deactivate()，再关闭库。noexcept；deactivate 从未成功过时
+    // 模块保持映射。
     void unload() noexcept;
 
 private:
@@ -135,7 +126,7 @@ private:
 
 // 懒激活策略（宿主可选装配，docs/proposal-kit.md §6.3）：
 // manifest 声明了 inject 的模块，在依赖服务就绪前不 activate（登记 PENDING）；
-// published 注册表每次变化后调用 pump() 重估，依赖齐了自动拉起。
+// published 注册表每次变化后调用 pump_into() 重估，依赖齐了自动拉起。
 // 已激活插件的依赖被撤销时，回滚由既有语义覆盖（revoke_dependents 依赖者先行）——
 // 本类只负责"还没激活的那一半"。
 class LazyGate {

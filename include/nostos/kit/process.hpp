@@ -2,10 +2,10 @@
 // nostos-kit —— 子进程生命周期（Tier 1）。
 //
 // start(command_line_utf8) 用 CreateProcessW 起一个子进程；wait/kill/exit_code
-// 管它的生与死。句柄 RAII：析构 = 不再等待（分离），不会杀进程也不会挂起——
+// 管它的生与死。句柄 RAII：析构即分离（不等待），不会杀进程也不会挂起——
 // 要"退出前等它做完"由调用方显式 wait()（与 kit::task 的 block 语义一致）。
 //
-// 非 Windows 平台：当前未实现（start 返回 false）。需要时再补 posix 分支。
+// 非 Windows 平台：当前未实现（start 返回 false）。TODO: 需要时补 posix 分支。
 
 #include <chrono>
 #include <cstdint>

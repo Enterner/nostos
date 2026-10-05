@@ -1,29 +1,25 @@
 #pragma once
-// nostos L2 — the host side of the C ABI boundary (docs/design.md §4.7).
+// nostos L2 —— C ABI 边界的宿主侧（docs/design.md §4.7）。
 //
-// HostBridge turns a HostCore into the stateless nostos_host_api table a
-// plugin receives. Every thunk is noexcept and swallows exceptions: nothing
-// may cross the boundary (discipline 2), including a host-side failure.
+// HostBridge 把 HostCore 变成 plugin 拿到的无状态 nostos_host_api 表。每个
+// thunk 都是 noexcept 并吞掉异常：任何东西都不得跨越边界（纪律 2），宿主侧
+// 的失败也不例外。
 //
-// The frozen table has no user pointer, so the thunks resolve "which host?"
-// through a thread-local *current bridge*. Host<...> installs its bridge when
-// it is created (install()), which means plugin code can call back into the
-// host from anywhere on that thread — during activate(), from inside a
-// published table function the host called, from an event callback — without
-// every native caller having to remember a guard. Guard is the explicit,
-// scoped form (the loader uses it around every call into plugin code) and the
-// way to nest two bridges deliberately.
+// 冻结的表没有用户指针，所以 thunk 经一个线程本地的*当前桥*来解析“是哪个
+// 宿主？”。Host<...> 在创建时安装自己的桥（install()），这意味着 plugin 代码
+// 可以在该线程的任何位置回调宿主——activate() 期间、在被宿主调用的
+// published 表函数内部、在事件回调里——而不必让每个原生调用者都记住一个
+// guard。Guard 是显式的、带作用域的形式（loader 在每次调用 plugin 代码时
+// 都用它），也是刻意嵌套两个桥的方式。
 //
-// Consequence, by design: one host per thread owns the ABI. A plugin calling
-// from a thread the host never called it on gets NULL/0 rather than a wrong
-// host, and two hosts constructed on one thread resolve to the most recently
-// created one (the core is single-threaded, docs/design.md §4.8).
+// 设计使然的后果：每个线程由一个宿主独占 ABI。plugin 在宿主从未调用过它的
+// 线程上调用，得到的是 NULL/0 而不是错误的宿主；同一线程上构造的两个宿主
+// 解析到最近创建的那个（core 是单线程的，docs/design.md §4.8）。
 //
-// Publish sessions: everything a plugin publishes between begin_session() and
-// end_session() is remembered, so a table owned by a plugin can never outlive
-// the plugin's activation — not on a failed activate, not if the plugin
-// forgets to unpublish. Before those tables go away, the *dependents* are
-// rolled back through the revoker hook Host<...> installs.
+// 发布会话：plugin 在 begin_session() 与 end_session() 之间发布的一切都会
+// 被记录，因此 plugin 拥有的表绝不可能比 plugin 的激活活得更久——无论是
+// activate 失败，还是 plugin 忘了 unpublish。这些表消失之前，*依赖者*会经
+// Host<...> 安装的 revoker 钩子回滚。
 
 #include <atomic>
 #include <cstddef>
@@ -49,34 +45,32 @@ public:
     HostBridge(const HostBridge&) = delete;
     HostBridge& operator=(const HostBridge&) = delete;
 
-    // A bridge that was never installed resolves nothing — the null case the
-    // thunks report as "no host".
+    // 从未 install 的桥解析不出任何东西——即 thunk 报告为“没有宿主”的空情形。
     ~HostBridge() {
         if (current() == this) set_current(previous_);
     }
 
     HostCore& core() noexcept { return *core_; }
 
-    // The table to hand to a plugin. Its address is stable for the process and
-    // every field — including those appended after the v1 freeze — is filled.
+    // 交给 plugin 的表。其地址在进程内稳定，且每个字段——包括 v1 冻结之后
+    // 追加的字段——都已填充。
     static const nostos_host_api* api() noexcept { return host_api_table(); }
 
-    // ---- current bridge ---------------------------------------------------
+    // ---- 当前桥 ------------------------------------------------------------
 
     static HostBridge* current() noexcept { return current_slot(); }
     static void set_current(HostBridge* bridge) noexcept { current_slot() = bridge; }
 
-    // Make this bridge the one the thunks resolve on this thread, until it is
-    // destroyed or another bridge is installed. Idempotent. Called by
-    // Host<...> when its bridge is first needed.
+    // 让本桥成为 thunk 在本线程上解析到的那个桥，直到它被销毁或安装了另一个
+    // 桥。幂等。由 Host<...> 在首次需要自己的桥时调用。
     void install() noexcept {
         if (current() == this) return;
         previous_ = current();
         set_current(this);
     }
 
-    // RAII install/restore, allocation-free so it is safe inside a noexcept
-    // thunk. A plugin callback re-enters through its own Guard.
+    // RAII 安装/恢复，无分配，因此在 noexcept thunk 内使用是安全的。plugin
+    // 回调经由自己的 Guard 重入。
     struct [[nodiscard]] Guard {
         explicit Guard(HostBridge& bridge) noexcept
             : bridge_(&bridge), previous_(HostBridge::current()) {
@@ -96,10 +90,10 @@ public:
         HostBridge* previous_;
     };
 
-    // ---- publish / subscribe sessions -------------------------------------
+    // ---- 发布 / 订阅会话 ---------------------------------------------------
 
-    // What the session has added so far. Both halves are tracked for the same
-    // reason: the host must be able to take back what the plugin handed it.
+    // 会话到目前为止新增的内容。两半都追踪是同一个原因：宿主必须能收回
+    // plugin 交出的东西。
     struct SessionMark {
         std::size_t published = 0;
         std::size_t subscriptions = 0;
@@ -111,9 +105,8 @@ public:
             SessionMark{published_.size(), subscriptions_.size(), session_posters_.size()});
     }
 
-    // Roll back native components that depend on the services published during
-    // the current session — dependents first, before the plugin itself is
-    // deactivated. Returns how many services had dependents rolled back.
+    // 回滚依赖当前会话所发布服务的原生组件——依赖者先行，在 plugin 本体
+    // deactivate 之前。返回回滚过依赖者的服务个数。
     std::size_t revoke_session_dependents() {
         std::size_t count = 0;
         const std::size_t mark = session_marks_.empty() ? 0 : session_marks_.back().published;
@@ -122,9 +115,8 @@ public:
         return count;
     }
 
-    // Forget (and unpublish) everything published in the current session, and
-    // unsubscribe everything the plugin subscribed during it.
-    // noexcept: it runs on teardown paths, including a failed activation.
+    // 忘掉（并撤销）当前会话发布的一切，并退订 plugin 在会话期间订阅的一切。
+    // noexcept：它运行在收尾路径上，包括激活失败的路径。
     void end_session() noexcept {
         if (session_marks_.empty()) return;
         const SessionMark mark = session_marks_.back();
@@ -133,23 +125,21 @@ public:
             core_->published().remove(published_[i - 1]);
         published_.resize(mark.published);
 
-        // The subscription half. A plugin that hands the host a callback and
-        // never takes it back would leave the host dispatching into a module it
-        // is about to unmap — and unlike a published table (which the host
-        // resolves on demand), a subscription is a live pointer into plugin code.
-        // When the outermost session ends the plugin is going away entirely, so
-        // anything it subscribed outside a session goes too.
+        // 订阅这一半。plugin 把回调交给宿主却从不收回，宿主就会继续向一个
+        // 即将 unmap 的模块分发——而且与 published 表（宿主按需解析）不同，
+        // 订阅是指向 plugin 代码的活指针。最外层会话结束时 plugin 将彻底
+        // 消失，所以它在会话之外订阅的一切也一并退订。
         const std::size_t from = session_marks_.empty() ? 0 : mark.subscriptions;
         for (std::size_t i = subscriptions_.size(); i > from; --i)
             core_->events().off_raw(subscriptions_[i - 1]);
         subscriptions_.resize(from);
 
-        // The poster half. A poster acquired in this session stops accepting
-        // work: a plugin that kept its own thread posting after deactivate
-        // would have the host running plugin code past its teardown.
-        // F11：作废前先走"丢弃回调"——会话内入队成功但未排水的任务，逐条交还
+        // 投递器这一半。本会话内取用的 poster 停止接收任务：plugin 若在
+        // deactivate 之后仍用自己的线程投递，宿主就会在收尾之后继续执行
+        // plugin 代码。
+        // F11：作废前先走“丢弃回调”——会话内入队成功但未排水的任务，逐条交还
         // 投递方回收（fn 必须是静态的、只触碰 arg：此刻插件对象已析构，代码段
-        // 仍映射到 unload 为止）。未注册 on_drop ⇒ 维持旧语义（静默丢弃）。
+        // 仍映射到 unload 为止）。未注册 on_drop ⇒ 静默丢弃。
         const std::size_t poster_from = session_marks_.empty() ? 0 : mark.posters;
         for (std::size_t i = session_posters_.size(); i > poster_from; --i) {
             PosterState* ps = session_posters_[i - 1];
@@ -179,7 +169,7 @@ public:
         return subscriptions_.size() -
                (session_marks_.empty() ? 0 : session_marks_.back().subscriptions);
     }
-    // Live subscriptions this bridge has handed out (session or not).
+    // 本桥已交出的、仍然存活的订阅（无论是否在会话内）。
     std::size_t subscriptions_tracked() const noexcept { return subscriptions_.size(); }
 
     // ---- poster：跨线程投递（绑定桥；M1，docs/proposal-kit.md §6.1）--------
@@ -212,8 +202,8 @@ public:
         return NOSTOS_OK;
     }
 
-    // 表槽位（static）：注册"丢弃回调"（F11：post 成功但会话作废时未执行的任务，
-    // 作废时逐条回调 fn(arg)，投递方就地回收——未注册则维持旧语义：静默丢弃）。
+    // 表槽位（static）：注册“丢弃回调”（F11：post 成功但会话作废时未执行的任务，
+    // 作废时逐条回调 fn(arg)，投递方就地回收——未注册则静默丢弃）。
     static nostos_status on_drop_thunk(void* self, void (*fn)(void* arg)) noexcept {
         auto* ps = static_cast<PosterState*>(self);
         if (ps == nullptr || fn == nullptr) return NOSTOS_ERR_INVALID_ARG;
@@ -282,11 +272,10 @@ public:
         }
     }
 
-    // ---- dependent rollback hook ------------------------------------------
+    // ---- 依赖者回滚钩子 ----------------------------------------------------
 
-    // Host<...> installs this: only it knows its components, so only it can
-    // roll back the ones that acquired a published table. Returns true when
-    // something was rolled back.
+    // 由 Host<...> 安装：只有它了解自己的组件，因此只有它能回滚取用了
+    // published 表的那些组件。发生了回滚时返回 true。
     using DependentRevoker = std::function<bool(std::uint64_t)>;
 
     void set_dependent_revoker(DependentRevoker revoker) {
@@ -299,15 +288,15 @@ public:
         if (revoker_) return revoker_(service_id);
         if (!warned_no_revoker_) {
             warned_no_revoker_ = true;
-            // A HostCore alone cannot know its components; say so once instead
-            // of silently leaving a native consumer holding a dead table.
+            // 裸的 HostCore 无从了解自己的组件；明说一次，而不是让原生消费者
+            // 无声地攥着一张死表。
             core_->log(3, "nostos: a plugin-published service was revoked without a "
                           "dependent-rollback hook; use Host<>::abi_bridge()");
         }
         return false;
     }
 
-    // ---- called by the thunks --------------------------------------------
+    // ---- 由 thunk 调用 ----------------------------------------------------
 
     void note_publish(std::uint64_t service_id) { published_.push_back(service_id); }
 
@@ -320,10 +309,9 @@ public:
         }
     }
 
-    // Same bookkeeping for subscriptions. The token is what off_raw() needs, and
-    // it is the only handle the host has on a raw subscription — a plugin that
-    // loses it can never release it, which is exactly why the host keeps its own
-    // copy (P2-9 in docs/known-issues.md).
+    // 订阅的同一套记账。token 是 off_raw() 所需的东西，也是宿主对裸订阅持有
+    // 的唯一句柄——丢掉它的 plugin 永远无法释放该订阅，这正是宿主自己留一份
+    // 拷贝的原因（docs/known-issues.md 的 P2-9）。
     void note_subscription(std::uint32_t token) {
         if (token != 0) subscriptions_.push_back(token);
     }
@@ -365,8 +353,8 @@ private:
 
 namespace detail {
 
-// The frozen table carries no user pointer, so these are the only place the
-// current bridge is consulted. All of them are noexcept by construction.
+// 冻结的表不带用户指针，因此这几处是仅有的查询当前桥的地方。它们在构造上
+// 都是 noexcept。
 inline const void* service_thunk(std::uint64_t service_id) noexcept {
     HostBridge* bridge = HostBridge::current();
     if (bridge == nullptr) return nullptr;
@@ -382,18 +370,16 @@ inline std::uint32_t on_thunk(std::uint64_t event_id, void (*fn)(void*, const vo
     HostBridge* bridge = HostBridge::current();
     if (bridge == nullptr || fn == nullptr) return 0;
     try {
-        // The subscription outlives this call and may fire from any host
-        // stack; it re-installs the bridge itself so a callback that calls
-        // back into the host still resolves the right core.
+        // 订阅比本次调用活得更久，可能从任何宿主栈上触发；它会自行重装桥，
+        // 于是回调里再调宿主仍能解析到正确的 core。
         const std::uint32_t token =
             bridge->core().events().on_raw(event_id, [bridge, fn, user](const void* payload) {
                 const HostBridge::Guard guard{*bridge};
                 fn(user, payload);
             });
-        // Record it, so the host can take it back when the plugin's session ends
-        // even if the plugin never calls off(). If recording fails (allocation),
-        // undo the subscription: reporting failure while leaving a live callback
-        // into the plugin behind would be the worst of both worlds.
+        // 记下它，plugin 的会话结束时宿主才能收回——哪怕 plugin 从不调用
+        // off()。若记账失败（分配），则撤销订阅：一边报告失败一边留下指向
+        // plugin 的活回调，是两头都糟的做法。
         try {
             bridge->note_subscription(token);
         } catch (...) {
@@ -419,7 +405,7 @@ inline void off_thunk(std::uint32_t subscription) noexcept {
 inline void log_thunk(int level, const char* msg) noexcept {
     if (msg == nullptr) return;
     HostBridge* bridge = HostBridge::current();
-    if (bridge == nullptr) {  // e.g. a plugin logging from its own thread
+    if (bridge == nullptr) {  // 例如 plugin 在自己的线程上打日志
         std::fprintf(stderr, "[nostos][%d] %s\n", level, msg);
         return;
     }
@@ -432,17 +418,16 @@ inline void log_thunk(int level, const char* msg) noexcept {
 inline nostos_status publish_thunk(std::uint64_t service_id, const void* table) noexcept {
     HostBridge* bridge = HostBridge::current();
     if (bridge == nullptr) return NOSTOS_ERR_BAD_STATE;
-    // Publishing is legal only inside an activation: that is the scope the host
-    // can revoke, and therefore the only scope in which a table owned by plugin
-    // code is guaranteed not to outlive the plugin.
+    // 发布只在激活内部合法：那是宿主能撤销的范围，因此也是唯一能保证
+    // plugin 代码拥有的表不比 plugin 活得更久的范围。
     if (!bridge->in_session()) return NOSTOS_ERR_BAD_STATE;
     try {
         bridge->core().published().add(service_id, table, nostos::detail::hex64(service_id));
         bridge->note_publish(service_id);
         return NOSTOS_OK;
     } catch (...) {
-        // Duplicate id, unstamped table, allocation failure: all reported the
-        // same way because the plugin cannot act differently on any of them.
+        // id 重复、表未盖章、分配失败：一律同样上报，因为 plugin 对其中任何
+        // 一种都无法采取不同的应对。
         return NOSTOS_ERR_INVALID_ARG;
     }
 }

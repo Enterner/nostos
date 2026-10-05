@@ -1,15 +1,14 @@
 #pragma once
-// nostos L2 — published services: the half of the service system that
-// crosses the dynamic-plugin boundary (docs/design.md §4.7).
+// nostos L2 —— published 服务：服务系统中跨越动态 plugin 边界的那一半
+// （docs/design.md §4.7）。
 //
-// Two layers, deliberately:
-//   * native services (registry.hpp) are C++ objects keyed by svc_id — fast,
-//     typed, but reachable only from inside one ABI domain;
-//   * published services are C interface tables (abi/interface.hpp) keyed by
-//     the same svc_id — the only thing a plugin built by another compiler can
-//     call.
-// A component may offer both; they share an identity but not a representation,
-// and nothing ever converts between them implicitly.
+// 刻意分成两层：
+//   * native 服务（registry.hpp）是以 svc_id 为键的 C++ 对象——快、带类型，
+//     但只在同一个 ABI 域内可达；
+//   * published 服务是以同一个 svc_id 为键的 C interface 表（abi/interface.hpp）
+//     ——它是另一个编译器构建的 plugin 唯一能调用的东西。
+// 一个 component 可以两者都提供：共享同一身份，但不共享表示，
+// 任何东西都不会在两层之间隐式转换。
 
 #include <cstddef>
 #include <cstdint>
@@ -27,10 +26,9 @@ namespace nostos {
 
 class PublishedRegistry {
 public:
-    // Register a table. The header is validated here so no consumer can ever
-    // resolve an unstamped table: struct_size must cover the header itself and
-    // abi_version must be non-zero. Duplicate ids are refused (this is the
-    // published mirror of duplicate_service).
+    // 注册一张表。头在这里校验，消费者因此永远不可能解析出未盖章的表：
+    // struct_size 必须覆盖头本身，abi_version 必须非零。重复 id 一律拒绝
+    // （这是 duplicate_service 的 published 镜像）。
     void add(std::uint64_t id, const void* table, std::string_view name) {
         if (table == nullptr)
             throw bad_published_table(name, bad_published_table::Reason::null_table);
@@ -61,13 +59,13 @@ public:
         return true;
     }
 
-    // Raw table lookup — what nostos_host_api::service calls.
+    // 原始表查找——nostos_host_api::service 调用的就是它。
     const void* find(std::uint64_t id) const noexcept {
         auto it = tables_.find(id);
         return it == tables_.end() ? nullptr : it->second;
     }
 
-    // Typed lookup for host-side (same ABI domain) callers, version-gated.
+    // host 侧（同一 ABI 域）调用者的带类型查找，带版本门控。
     template <abi::Table T>
     const T* find_as(std::uint64_t id, std::uint32_t min_version = 1) const noexcept {
         return abi::as_table<T>(find(id), min_version);
@@ -76,7 +74,7 @@ public:
     bool contains(std::uint64_t id) const noexcept { return tables_.count(id) != 0; }
     std::size_t size() const noexcept { return tables_.size(); }
 
-    // Ids in registration order (introspection/tests).
+    // 按注册顺序排列的 id（自省/测试用）。
     const std::vector<std::uint64_t>& ids() const noexcept { return order_; }
 
     // ---- 枚举（跨 ABI 域的“发现”）-------------------------------------------

@@ -20,7 +20,7 @@ inline std::string unpack_version(std::uint32_t packed) {
 }
 
 struct PluginInfo {
-    std::string name;  // the table's static name, copied
+    std::string name;  // 表里的静态名字，拷贝而来
     std::uint32_t version = 0;
     bool has_save_state = false;
     bool has_load_state = false;
@@ -32,7 +32,7 @@ struct PluginInfo {
 
 namespace nostos {
 
-// 历史名字：插件信息一直是 nostos::PluginInfo（现在实现搬到了 abi:: 下，名字保留）。
+// abi::PluginInfo 的别名：对外沿用历史名字 nostos::PluginInfo。
 // 顶层 unpack_version 的别名留在 loader.hpp（那套 API 的一部分），这里不重复定义。
 using PluginInfo = abi::PluginInfo;
 

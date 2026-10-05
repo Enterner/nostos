@@ -7,7 +7,7 @@
 //   · 观众数 = 内存上限 × 常数，线程数恒为 1；deactivate 只需置位 + join 一次，
 //     "关停后线程归零"因此是构造性成立的，而不是靠纪律。
 //   · 代价：文件读是同步的，若根目录在网络盘上，一次 128 KiB 读会短暂卡住整个循环。
-//     本地盘可接受，这条已记进方案的风险清单。
+//     本地盘可接受，这条记在方案的风险清单里。
 //
 // 本文件**不包含任何平台头**（实现里才有 <winsock2.h> / <sys/socket.h>），
 // 这样 plugin.cpp 与测试都只看到纯 C++ 接口。
@@ -80,6 +80,7 @@ struct ServerOptions {
     std::size_t chunk = 128 * 1024;       // 文件分块大小
     std::size_t max_request = 16 * 1024;  // 请求头上限
     std::chrono::milliseconds stall_timeout{15000};       // 完全无进展 ⇒ 丢弃
+                                                          // （SSE 长连接豁免：空闲是常态）
     std::chrono::milliseconds poll_interval{200};         // select 超时（也决定 stop 的响应延迟）
 };
 

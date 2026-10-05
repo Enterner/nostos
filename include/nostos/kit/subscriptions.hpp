@@ -9,8 +9,7 @@
 //     subs.dispose();                               // deactivate：逆序统一释放
 //
 // 这是便利设施不是义务（P1）；内核不要求插件使用它。
-// 位置说明：实现在 include 树里随 core 头分发（本文件零依赖，不违反 Tier 0）；
-// kit 正式组件化（M3）后再迁往 nostos/kit/。
+// 位置说明：位于 include/nostos/kit/，随 core 头分发（本文件零依赖，不违反 Tier 0）。
 
 #include <cstddef>
 #include <functional>

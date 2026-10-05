@@ -1,11 +1,10 @@
 #pragma once
-// nostos L0 — compile-time service identity.
+// nostos L0 —— 编译期 service 身份。
 //
-// Services and events are identified by a name hashed at compile time
-// (fnv1a-64). The same 64-bit value serves as the registry key in the C++
-// core and as the wire identifier across the C ABI boundary, which is what
-// makes "MinGW plugin ↔ MSVC host" possible: typeid/std::type_index are NOT
-// stable across compilers, names are.
+// service 与 event 用编译期哈希的名字（fnv1a-64）标识。同一个 64 位值既充当
+// C++ 核心里的 registry 键，又充当跨 C ABI 边界的线上标识符——"MinGW 插件
+// ↔ MSVC host" 之所以可行全在于此：typeid/std::type_index 跨编译器不稳定，
+// 名字则稳定。
 
 #include <cstddef>
 #include <cstdint>
@@ -13,7 +12,7 @@
 
 namespace nostos {
 
-// A structural literal string usable as a C++20 non-type template parameter.
+// 可用作 C++20 非类型模板参数的结构化字面字符串。
 template <std::size_t N>
 struct fixed_string {
     char value[N]{};
@@ -23,7 +22,7 @@ struct fixed_string {
     }
 
     constexpr const char* data() const noexcept { return value; }
-    constexpr std::size_t size() const noexcept { return N - 1; }  // excluding the NUL
+    constexpr std::size_t size() const noexcept { return N - 1; }  // 不含 NUL
     constexpr std::string_view view() const noexcept { return {value, N - 1}; }
 
     friend constexpr bool operator==(const fixed_string& a, const fixed_string& b) noexcept {
@@ -46,8 +45,8 @@ constexpr std::uint64_t fnv1a64(std::string_view s) noexcept {
 
 }  // namespace detail
 
-// Identity of a service or event. Two names must never map to the same id;
-// Phase 2 adds a compile-time dedup assertion over all Provides.
+// service 或 event 的身份。两个名字绝不许映射到同一个 id——di.hpp 在编译期
+// 对全部 Provides 做去重断言（Phase 2）。
 template <fixed_string S>
 inline constexpr std::uint64_t svc_id = detail::fnv1a64(S.view());
 

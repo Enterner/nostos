@@ -1,19 +1,16 @@
 #pragma once
-// nostos L1 — native service registry.
+// nostos L1 —— 原生 service registry。
 //
-// Services are keyed by their compile-time name hash (svc_id, see svc_id.hpp)
-// — never by std::type_index, which is not stable across compilers. Within a
-// single ABI domain the registry still enforces type safety: every entry
-// remembers the type it was registered as, and a lookup requesting a different
-// type is a loud error in debug builds rather than a silent
-// static_pointer_cast — see find() below. Note the qualifier: in release that
-// comparison is compiled out, because a wrong-typed acquisition is meant to be
-// impossible by construction (di.hpp's compile-time contract plus Context's
-// declared-Requires check). The runtime check is the debug belt to those braces.
+// service 以编译期名字哈希（svc_id，见 svc_id.hpp）作键——绝不用
+// std::type_index，它跨编译器不稳定。在单个 ABI 域内，registry 仍然强制类型
+// 安全：每个条目记住自己注册时的类型，查找时请求了不同类型，在 debug 构建里
+// 就是显式报错，而不是无声的 static_pointer_cast——见下面的 find()。注意限定
+// 语：release 构建里该比较会被编译掉，因为类型错误的取用在构造上就应当不可
+// 能发生（di.hpp 的编译期契约加上 Context 的 declared-Requires 检查）。运行期
+// 检查只是这套约束之外再加的一道 debug 保险（belt-and-braces）。
 //
-// Native services are C++ objects and stay inside one ABI domain; crossing
-// the C boundary is the job of *published* services (COM-style interface
-// tables, Phase 3).
+// 原生 service 是 C++ 对象，只存在于单个 ABI 域之内；跨越 C 边界是 *published*
+// service（COM 风格接口表，Phase 3）的职责。
 
 #include <cstddef>
 #include <cstdint>
@@ -29,13 +26,11 @@
 
 namespace nostos {
 
-// The error vocabulary (nostos_error and friends) lives in nostos/error.hpp so
-// that event.hpp, di.hpp and the loader can share it without depending on the
-// registry.
+// 错误词汇表（nostos_error 及其家族）放在 nostos/error.hpp，event.hpp、
+// di.hpp 与 loader 因此可以共享它，而不必依赖 registry。
 
-// Shared, non-owning view of a service instance. Because it holds a
-// shared_ptr, an out-of-order revoke degrades to an extended lifetime, never
-// to a dangling reference.
+// service 实例的共享、非独占视图。因为持有 shared_ptr，乱序 revoke 的最坏
+// 结果只是生命周期被延长，绝不会变成悬垂引用。
 template <typename T>
 class ServiceHandle {
 public:
@@ -58,8 +53,7 @@ public:
     ServiceRegistry(const ServiceRegistry&) = delete;
     ServiceRegistry& operator=(const ServiceRegistry&) = delete;
 
-    // Register a service under a compile-time name. Throws duplicate_service
-    // on id collision.
+    // 以编译期名字注册一个 service。id 冲突时抛 duplicate_service。
     template <fixed_string Name, typename T, typename... Args>
     T& provide(Args&&... args) {
         constexpr std::uint64_t id = svc_id<Name>;
@@ -70,8 +64,8 @@ public:
         return ref;
     }
 
-    // Typed lookup; nullptr when absent. Throws type_mismatch in debug builds
-    // if the stored type differs from the requested one.
+    // 类型化查找；不存在时返回 nullptr。debug 构建里，存储类型与请求类型不符
+    // 时抛 type_mismatch。
     template <fixed_string Name, typename T>
     std::shared_ptr<T> find() const {
         constexpr std::uint64_t id = svc_id<Name>;
@@ -89,7 +83,7 @@ public:
     std::size_t size() const noexcept { return services_.size(); }
     bool empty() const noexcept { return services_.empty(); }
 
-    // Human-readable name for diagnostics; empty string for unknown ids.
+    // 供诊断用的可读名字；未知 id 返回空字符串。
     std::string name_of(std::uint64_t id) const {
         auto it = services_.find(id);
         return it == services_.end() ? std::string() : it->second.name;

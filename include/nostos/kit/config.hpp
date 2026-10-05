@@ -6,7 +6,7 @@
 // JSON 层使用 vendored nlohmann/json（Tier 1 首个准入，3.11.3，版本钉死）；
 // 只在 load_file 一处使用——其余部分零依赖。
 //
-// 环境层的变更无通知机制（getenv 无回调），文档已注明：该层的变更不触发 on_change。
+// 环境层的变更无通知机制（getenv 无回调）：该层的变更不触发 on_change，文档同此口径。
 
 #include <nlohmann/json.hpp>
 
@@ -72,7 +72,7 @@ public:
     }
 
     // ---- 环境层绑定：配置键 → 环境变量名 ------------------------------------
-    // 变更无通知（getenv 无回调）：该层的变更不触发 on_change，文档已注明。
+    // 变更无通知（getenv 无回调）：该层的变更不触发 on_change。
     void bind_env(const std::string& key, const std::string& env_name) {
         std::lock_guard<std::mutex> lock(mu_);
         env_[key] = env_name;

@@ -141,7 +141,7 @@ std::string response_head(const Response& response, std::size_t content_length) 
     std::string head = "HTTP/1.1 " + std::to_string(response.status) + " " + reason + "\r\n";
     head += "Content-Type: " + response.content_type + "\r\n";
     head += "Content-Length: " + std::to_string(content_length) + "\r\n";
-    // 面板/流式都不要缓存：这一头是旧 web_ui 服务器带给每个响应的，迁移后保持等价。
+    // 面板/流式都不要缓存：每个响应都带这一头。
     head += "Cache-Control: no-store\r\n";
     for (const auto& header : response.headers)
         head += header.name + ": " + header.value + "\r\n";
@@ -344,7 +344,7 @@ struct Server::Impl {
             std::string block(want, '\0');
             client.file->read(block.data(), static_cast<std::streamsize>(want));
             const std::streamsize got = client.file->gcount();
-            if (got <= 0) {  // 文件被截断/读失败：收尾，不再发
+            if (got <= 0) {  // 文件被截断/读失败：收尾，停止发送
                 client.remaining = 0;
                 client.file.reset();
                 return;
@@ -502,6 +502,8 @@ struct Server::Impl {
                                       [&](Client& client) { return client.fd == kInvalidSocket; }),
                        clients_.end());
         for (auto& client : clients_) {
+            if (client.sse) continue;  // SSE 长连接空闲是常态：两次事件之间本就无数据，
+                                       // 不受停滞回收（踩过: 插件侧 webui——SSE 空闲 15s 被掐断，页面实时通道周期性死亡）。
             if (now - client.last_progress <= options_.stall_timeout) continue;
             stalled_dropped_.fetch_add(1);
             close_client(client);

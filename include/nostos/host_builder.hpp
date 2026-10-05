@@ -1,28 +1,23 @@
 #pragma once
-// nostos L1 — Host: activation, transactional rollback, reverse teardown,
-// and dynamic (partial) unload.
+// nostos L1 — Host：激活、事务式回滚、逆序 teardown、动态（部分）卸载。
 //
-// Host<Cs...> activates components in declaration order. Since a service must
-// be provided before it can be acquired (service() throws otherwise), the
-// declaration order IS the topological order — no runtime resolver, no cycle
-// detection: a cycle would mean "acquire before provide", which simply fails
-// and rolls back.
+// Host<Cs...> 按声明顺序激活组件。既然 service 必须先被提供才能被取用
+// （否则 service() 抛异常），声明顺序就*是*拓扑序 — 无需运行期解析器，
+// 也无需环检测：环意味着「先取用、后提供」，那只会在运行期失败并回滚。
 //
-// start() is one transaction: if any activate() throws, every component that
-// already activated — and the partial state of the failing one — is rolled
-// back. shutdown() walks the exact reverse: onStop() → scope unwind (LIFO,
-// which also unregisters services) → component destruction.
+// start() 是一个事务：任一 activate() 抛出异常时，所有已激活的组件 —
+// 以及失败组件自身的部分状态 — 都会被回滚。shutdown() 按完全相反的
+// 顺序执行：onStop() → scope unwind（LIFO，同时注销 service）→ 组件
+// 析构。
 //
-// Phase 2 adds the two halves of the static contract:
+// 静态契约分两半：
 //
-//   * Compile time (di.hpp): declared Requires must be covered by the union of
-//     the declared Provides, with matching C++ types, and every provided
-//     svc_id must be unique.
-//   * Run time: a service can be revoked while the host runs. unload(i) and
-//     revoke(id) roll back the provider *after* rolling back everything that
-//     depends on it, dependents first, in reverse activation order — the same
-//     global reverse order a full shutdown uses, restricted to the affected
-//     closure. Nothing is left holding a service whose provider is gone.
+//   * 编译期（di.hpp）：已声明的 Requires 必须被已声明 Provides 的并集
+//     覆盖且 C++ 类型一致，并且每个 svc_id 的提供必须唯一。
+//   * 运行期：宿主运行期间 service 可以被撤销。unload(i) 与 revoke(id)
+//     先回滚所有依赖方（依赖方在前，按逆激活序），*之后*才回滚提供者
+//     — 与整体 shutdown 相同的全局逆序，只是限定在受影响的闭包内。
+//     任何组件都不会继续持有提供者已消失的 service。
 
 #include <array>
 #include <concepts>
@@ -62,12 +57,11 @@ public:
     static constexpr std::size_t component_count = sizeof...(Cs);
     static constexpr std::size_t npos = static_cast<std::size_t>(-1);
 
-    // ---- whole-host lifecycle --------------------------------------------
+    // ---- 整个宿主的生命周期 --------------------------------------------
 
-    // Activate every component that is not active yet, in declaration order,
-    // as one transaction. Throws nostos_error when everything is already
-    // active. On failure only the components this call activated are rolled
-    // back, so start() is safe to retry.
+    // 按声明顺序把所有尚未激活的组件作为一个事务激活。全部组件均已激活
+    // 时抛出 nostos_error。失败时只回滚本次调用激活的那些组件，因此
+    // start() 可以安全重试。
     void start() {
         if constexpr (component_count == 0) {
             started_ = true;
@@ -86,23 +80,21 @@ public:
         }
     }
 
-    // Reverse teardown of every active component. noexcept, idempotent.
+    // 对所有激活组件做逆序 teardown。noexcept，幂等。
     void shutdown() noexcept {
         started_ = false;
         deactivate_all();
     }
 
-    // True from a successful start() until shutdown(). A dynamic unload does
-    // not clear it — the host is still running, just with fewer components —
-    // so start() brings the missing ones back.
+    // 从 start() 成功起、直到 shutdown() 都为 true。动态卸载不清除它 —
+    // 宿主仍在运行，只是组件变少了 — 因此 start() 会把缺失的组件补回来。
     bool started() const noexcept { return started_; }
 
-    // ---- dynamic (partial) unload ----------------------------------------
+    // ---- 动态（部分）卸载 ----------------------------------------
 
-    // Roll back one component plus every component that (transitively)
-    // depends on a service it provides — dependents first, in reverse
-    // activation order. Returns how many components were unloaded. noexcept:
-    // rollback must not fail. The host stays started.
+    // 回滚一个组件，外加（传递地）依赖它所提供 service 的每个组件 —
+    // 依赖方在前，按逆激活序。返回被卸载的组件数。noexcept：回滚绝不
+    // 能失败。宿主保持 started 状态。
     std::size_t unload(std::size_t index) noexcept {
         if (index >= component_count) return 0;
         std::array<bool, component_count> mark{};
@@ -117,11 +109,10 @@ public:
         return unload(idx);
     }
 
-    // Revoke a service: unload the component that provides it — and therefore
-    // every dependent first. When no component provides id (a published table
-    // owned by a dynamic plugin, say) the dependents are still rolled back, so
-    // the caller can safely take the provider away; false when nothing is
-    // attached to id at all.
+    // 撤销一个 service：卸载提供它的组件 — 因而所有依赖方先被回滚。
+    // 若没有任何组件提供 id（例如一张由动态插件拥有的 published 表），
+    // 依赖方仍会被回滚，调用方因此可以放心拿走提供者；完全没有任何东西
+    // 挂在 id 上时返回 false。
     bool revoke(std::uint64_t id) noexcept {
         const std::size_t provider = core_.provider_of(id);
         if (provider == npos) {
@@ -139,10 +130,9 @@ public:
         return revoke(svc_id<Name>);
     }
 
-    // Activate one inactive component: retry after a failed activation, or
-    // re-activation of something unload()/revoke() rolled back. Throws the
-    // component's own exception, or missing_service when its dependencies are
-    // not currently provided; a failure rolls this component back completely.
+    // 激活一个未激活的组件：用于激活失败后的重试，或重新激活被
+    // unload()/revoke() 回滚掉的组件。抛出组件自身的异常；当其依赖当前
+    // 无人提供时抛出 missing_service；失败时把该组件完全回滚。
     void activate(std::size_t index) {
         if (index >= component_count)
             throw std::out_of_range("nostos: component index out of range");
@@ -160,7 +150,7 @@ public:
         activate(idx);
     }
 
-    // ---- introspection ---------------------------------------------------
+    // ---- 内省 ---------------------------------------------------
 
     std::size_t active_components() const noexcept {
         return count_active(std::index_sequence_for<Cs...>{});
@@ -170,7 +160,7 @@ public:
         return index < component_count && is_active_at(index, std::index_sequence_for<Cs...>{});
     }
 
-    // The component that currently provides id, or npos.
+    // 当前提供 id 的组件，没有则为 npos。
     std::size_t provider_of(std::uint64_t id) const noexcept { return core_.provider_of(id); }
 
     ServiceRegistry& services() noexcept { return core_.services(); }
@@ -196,17 +186,16 @@ public:
     PublishedRegistry& published() noexcept { return core_.published(); }
     const PublishedRegistry& published() const noexcept { return core_.published(); }
 
-    // Where nostos_host_api::log lands (default: stderr).
+    // nostos_host_api::log 的落点（默认：stderr）。
     void set_log_sink(HostCore::LogSink sink) { core_.set_log_sink(std::move(sink)); }
 
-    // Escape hatch: the raw core, for wiring that is not a component.
+    // 逃生口：裸 core，供不属于组件的接线使用。
     HostCore& core() noexcept { return core_; }
 
-    // The C ABI bridge for this host — what a dynamic plugin is handed, wired
-    // so that a plugin-published service has its native dependents rolled back
-    // before the plugin itself is deactivated. Created on first use (hosts that
-    // never load a plugin pay nothing) and installed for this thread, so plugin
-    // code can call back into the host from anywhere the host calls it from.
+    // 本宿主的 C ABI 桥 — 动态插件拿到的东西。其接线保证：插件发布的
+    // service，其原生依赖方会先于插件自身停用而被回滚。首次使用时创建
+    // （从不加载插件的宿主零开销），并安装到当前线程，因此插件代码可以
+    // 从宿主调用它的任何位置回调宿主。
     abi::HostBridge& abi_bridge() {
         if (!bridge_) {
             bridge_ = std::make_unique<abi::HostBridge>(core_);
@@ -216,7 +205,7 @@ public:
         return *bridge_;
     }
 
-    // True once abi_bridge() was called at least once.
+    // abi_bridge() 至少被调用过一次后为 true。
     bool has_abi_bridge() const noexcept { return bridge_ != nullptr; }
 
 private:
@@ -230,7 +219,7 @@ private:
         bool active = false;
     };
 
-    // ---- compile-time checks ---------------------------------------------
+    // ---- 编译期检查 ---------------------------------------------
 
     template <typename C>
     static void check_component() {
@@ -246,9 +235,9 @@ private:
                       "(see nostos/di.hpp)");
     }
 
-    // The host-wide dependency contract: unique Provides, covered Requires.
-    // Both failures are reported by instantiating a deliberately failing type
-    // whose name carries the offending component and service.
+    // 全宿主范围的依赖契约：Provides 唯一，Requires 被覆盖。两种失败
+    // 都通过实例化一个故意失败、类型名携带违规组件与 service 的类型来
+    // 报告。
     static void check_dependencies() {
         if constexpr ((di::well_formed_v<Cs> && ...)) {
             using dup_finding = di::duplicate_t<Cs...>;
@@ -263,10 +252,9 @@ private:
         }
     }
 
-    // Hand the declarations to the core so Context can refuse what the
-    // component's own contract does not cover: provide() against a missing
-    // Provides entry, and service()/require() against a missing — or
-    // differently-typed — Requires entry.
+    // 把声明交给内核，使 Context 能拒绝组件自身契约未覆盖的操作：对缺失
+    // 的 Provides 条目调用 provide()，以及对缺失的 — 或类型不符的 —
+    // Requires 条目调用 service()/require()。
     template <std::size_t... I>
     void register_declarations(std::index_sequence<I...>) {
         (core_.declare_provides(I, declared_ids<ComponentI<I>>()), ...);
@@ -283,9 +271,8 @@ private:
         }
     }
 
-    // Requires entries carry their C++ type as well: the call site names the
-    // type independently of the declaration, so id equality alone cannot catch
-    // a drifted acquisition.
+    // Requires 条目还携带其 C++ 类型：调用点是独立于声明来指名类型的，
+    // 因此仅凭 id 相等无法发现偏离声明的取用。
     template <typename List>
     struct DeclaredRequires;
     template <typename... S>
@@ -316,7 +303,7 @@ private:
         }
     }
 
-    // ---- activation -------------------------------------------------------
+    // ---- 激活 -------------------------------------------------------
 
     template <std::size_t I>
     bool slot_active() const noexcept {
@@ -345,7 +332,7 @@ private:
         } catch (...) {
             core_.clear_dependencies_for(I);
             core_.clear_provides_for(I);
-            slot.scope->reset();  // transactional: undo everything activate() did
+            slot.scope->reset();  // 事务式：撤销 activate() 做过的一切
             slot.component.reset();
             slot.scope.reset();
             throw;
@@ -359,10 +346,10 @@ private:
 
     template <std::size_t... I>
     void deactivate_all(std::index_sequence<I...>) noexcept {
-        (deactivate_one<component_count - 1 - I>(), ...);  // reverse activation order
+        (deactivate_one<component_count - 1 - I>(), ...);  // 逆激活序
     }
 
-    // Deactivate the marked components, still in reverse activation order.
+    // 停用被标记的组件，同样按逆激活序。
     template <std::size_t... I>
     std::size_t deactivate_marked(const std::array<bool, component_count>& mark,
                                   std::index_sequence<I...>) noexcept {
@@ -388,28 +375,25 @@ private:
         using C = ComponentI<I>;
         if constexpr (DeclaresOnStop<C>) slot.component->onStop();
         core_.clear_dependencies_for(I);
-        slot.scope->reset();  // LIFO: user cleanup first, service unregistration last
+        slot.scope->reset();  // LIFO：先执行用户清理，service 注销在最后
         core_.clear_provides_for(I);
         slot.component.reset();
         slot.scope.reset();
     }
 
-    // Every component that (transitively) depends on a service the root
-    // provides, plus the root itself. Fixed point over the recorded edges:
-    // the edge set is tiny and the core is single-threaded, so a simple
-    // loop beats a graph structure — and it cannot allocate, which matters
-    // because unload() is noexcept.
+    // （传递地）依赖 root 所提供 service 的每个组件，外加 root 自身。
+    // 在已记录的依赖边上求不动点：边集很小且内核单线程，简单循环胜过
+    // 图结构 — 而且它不做内存分配，这一点很重要，因为 unload() 是
+    // noexcept。
     void mark_with_dependents(std::size_t root,
                               std::array<bool, component_count>& mark) const noexcept {
         mark[root] = true;
         mark_closure(mark);
     }
 
-    // Every component that (transitively) depends on `id`, whoever provides it.
-    // Used for services no component owns — a dynamic plugin's published
-    // tables — where there is no provider to unload but the dependents still
-    // have to roll back before the table disappears. Returns how many were
-    // newly marked.
+    // （传递地）依赖 `id` 的每个组件，无论提供者是谁。用于没有组件拥有
+    // 的 service — 动态插件的 published 表 — 此时没有提供者可卸载，但
+    // 依赖方仍须在表消失之前回滚。返回新标记的数量。
     std::size_t mark_dependents_of(std::uint64_t id,
                                    std::array<bool, component_count>& mark) const noexcept {
         std::size_t count = 0;
@@ -424,8 +408,8 @@ private:
         return count;
     }
 
-    // Propagate marks along the dependency edges to a fixed point: if a marked
-    // component provides a service, everyone who acquired it goes too.
+    // 沿依赖边传播标记直至不动点：被标记的组件若提供了某个 service，
+    // 取用过它的组件也一并标记。
     void mark_closure(std::array<bool, component_count>& mark,
                       std::size_t* count = nullptr) const noexcept {
         bool changed = true;
@@ -444,7 +428,7 @@ private:
         }
     }
 
-    // ---- counting ---------------------------------------------------------
+    // ---- 计数 ---------------------------------------------------------
 
     template <std::size_t... I>
     std::size_t count_active(std::index_sequence<I...>) const noexcept {
@@ -456,7 +440,7 @@ private:
         return ((index == I ? slot_active<I>() : false) || ...);
     }
 
-    HostCore core_;  // declared first → destroyed last (components reference it)
+    HostCore core_;  // 先声明 → 最后析构（组件会引用它）
     std::tuple<Slot<Cs>...> slots_;
     std::unique_ptr<abi::HostBridge> bridge_;
     bool started_ = false;

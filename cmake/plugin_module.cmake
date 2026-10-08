@@ -6,12 +6,12 @@
 #
 # 用法（插件自己的 CMakeLists.txt 里）：
 #
-#     set(NOSTOS_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." CACHE PATH "nostos 仓库根")
+#     set(NOSTOS_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../nostos" CACHE PATH "nostos 内核仓根")
 #     if(NOT TARGET nostos::core)
-#         add_subdirectory("${NOSTOS_ROOT}/nostos" "${CMAKE_CURRENT_BINARY_DIR}/_nostos"
+#         add_subdirectory("${NOSTOS_ROOT}" "${CMAKE_CURRENT_BINARY_DIR}/_nostos"
 #                          EXCLUDE_FROM_ALL)
 #     endif()
-#     include("${NOSTOS_ROOT}/nostos/cmake/plugin_module.cmake")
+#     include("${NOSTOS_ROOT}/cmake/plugin_module.cmake")
 #     nostos_plugin_module(my_plugin plugin.cpp)
 #     target_include_directories(my_plugin PRIVATE "${NOSTOS_APP_DIR}" ...)
 #
@@ -29,7 +29,10 @@ set(NOSTOS_APP_DIR "${NOSTOS_ROOT}/app" CACHE PATH "参考宿主目录（contrac
 #     plugin/<名字>/build-<preset>/<config>/<名字>.dll
 # 谁需要它在别处（例如测试工程要放在测试可执行文件旁边），谁自己拷 ——
 # 产物永远属于插件，不因"被谁包含进来"而改变位置。
-include("${NOSTOS_ROOT}/nostos/cmake/asan_runtime.cmake")
+# NOTE: NOSTOS_ROOT 统一指**内核仓根**（消费方 nostos_root.cmake 同语义）——
+# 曾按"父容器"语义拼过 ${NOSTOS_ROOT}/nostos/cmake/，与唯一消费方冲突令全部
+# 插件 configure 失败，统一后消灭双语义。
+include("${NOSTOS_ROOT}/cmake/asan_runtime.cmake")
 
 function(nostos_plugin_module name)
     add_library(${name} MODULE ${ARGN})

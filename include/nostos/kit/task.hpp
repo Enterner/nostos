@@ -1,5 +1,5 @@
 #pragma once
-// nostos-kit —— 后台任务（docs/proposal-kit.md §5.4）。
+// nostos-kit —— 后台任务。
 //
 // spawn 把 job 放到独立线程；完成/异常经 dispatch 回宿主线程。
 // 关停行为随任务声明（Chromium TaskTraits 的做法）：

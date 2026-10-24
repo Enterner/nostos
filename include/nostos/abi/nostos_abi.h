@@ -3,7 +3,7 @@
  * 这是唯一跨越动态 plugin 边界的东西。plugin 内部可以随意用 C++；跨越此
  * 边界只传 C 标量、函数指针和 void*。
  *
- * 五条边界纪律（docs/design.md §4.7）：
+ * 五条边界纪律：
  *   1. 谁分配谁释放 —— 宿主绝不释放 plugin 的内存，反之亦然。跨边界交出的
  *      缓冲区由其创建者持有。
  *   2. 异常绝不跨越此边界。回调实际上都是 noexcept；错误经 nostos_status
@@ -28,7 +28,7 @@
  *   既有字段绝不改变含义、绝不重排、绝不删除。NOSTOS_HOST_API_V1_SIZE 是
  *   冻结 v1 前缀的大小。
  *
- * v1 的已知缺口（刻意的，见 docs/design.md §4.7）：没有让 plugin *提供*
+ * v1 的已知缺口（刻意的）：没有让 plugin *提供*
  * 原生（C++）服务的回调——只有 published 表服务；也没有办法观察到未先
  * deactivate 就死掉的 plugin。
  *
@@ -151,6 +151,20 @@ typedef struct nostos_host_api {
      * NULL）只返回当前总数，不写入。这是跨 ABI 域的“发现”面——工具自述、
      * 状态面板之类；同一 ABI 域内的宿主直接用 PublishedRegistry::entries()。 */
     uint32_t (*published_list)(struct nostos_published_entry* out, uint32_t cap);
+
+    /* 按槽订阅事件（尾部追加；用 NOSTOS_HOST_HAS(host, on_slot) 门控）。
+     * slot=0 与 on() 完全等价（广播）；slot!=0 只收向该 (evt_id, slot) 显式
+     * emit_slot 的事件——广播事件与其他槽都不投递给本回调。返回的 token 与
+     * on() 共用同一空间，off() 统一退订；会话结束时的收回纪律也与 on() 一致。 */
+    uint32_t (*on_slot)(uint64_t evt_id, uint64_t slot,
+                        void (*fn)(void* user, const void* payload), void* user);
+
+    /* 按 slot 引发事件（尾部追加；用 NOSTOS_HOST_HAS(host, emit_slot) 门控）。
+     * slot=0 与 emit() 完全等价；slot!=0 是独立于广播的单播通道——只投递给
+     * 该 (evt_id, slot) 的显式 on_slot 订阅者，不进宿主的原生监听者，也不进
+     * 广播订阅者。payload 语义不变（纪律 5）。slot 只做路由键：值域由生产者
+     * 与消费者约定，内核不登记含义；业务数据一律走 payload。 */
+    void (*emit_slot)(uint64_t evt_id, uint64_t slot, const void* payload);
 } nostos_host_api;
 
 /* 冻结 v1 前缀的大小 —— 更老的对端 sizeof() 会得到的值。 */
@@ -172,7 +186,7 @@ typedef struct nostos_config_contrib {
 } nostos_config_contrib;
 
 /* 插件的声明式 manifest（可为 NULL = 无声明；三个指针也都可以是 NULL）。
- * 语义由宿主策略实现（docs/proposal-kit.md §6.3）：
+ * 语义由宿主策略实现：
  *   inject  —— 依赖的服务名；宿主可在依赖未就绪时不激活（懒激活）。
  *   provide —— 声明本插件提供的服务名；宿主可在 activate 返回后做
  *              声明↔实际校验（软告警，不失败）。
@@ -202,7 +216,7 @@ typedef struct nostos_plugin_api {
     /* 把 plugin 装配起来。失败时返回非 OK；宿主保证不再有后续调用，且失败的
      * activate 不留残渣——plugin 报告失败之后不得再要求自行清理。成功时
      * *out_state 会被原样交回给其余每个调用；失败时其值未指定、宿主忽略
-     * （loader 改为清除自己的指针——见 DynamicPlugin::activate）。 */
+     * （loader 则清除自己的指针——见 DynamicPlugin::activate）。 */
     nostos_status (*activate)(const nostos_host_api* host, void** out_state);
 
     /* 完全释放 activate() 创建的一切。每次成功的 activate 恰好调用一次；
@@ -215,7 +229,7 @@ typedef struct nostos_plugin_api {
     nostos_status (*load_state)(void* state, const void* buf, size_t len);
 
     /* 声明式 manifest（可选，可为 NULL）：inject / provide / 贡献配置项。
-     * 宿主用它做懒激活、依赖记账与配置发现（docs/proposal-kit.md §6.3）。 */
+     * 宿主用它做懒激活、依赖记账与配置发现。 */
     const nostos_manifest* manifest;
 } nostos_plugin_api;
 

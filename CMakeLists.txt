@@ -2,8 +2,8 @@ cmake_minimum_required(VERSION 3.24)
 
 # ── nostos 库本体 ───────────────────────────────────────────────────────────
 #
-# 这个目录**只有库**：header-only 核心 + 唯一需要编译的 loader + 安装/导出规则。
-# 应用（app/）、插件（plugin/）、示例与测试都在上层工作区，不属于这个包。
+# 这个目录是库：header-only 核心 + 唯一需要编译的 loader + 安装/导出规则。
+# 应用（app/）与插件（plugin/）都在上层工作区，不属于这个包。
 #
 # 两种用法：
 #   1) 被工作区包含：上层 CMakeLists 里 add_subdirectory(nostos)
@@ -31,15 +31,13 @@ target_include_directories(nostos INTERFACE
 target_compile_features(nostos INTERFACE cxx_std_20)
 
 if(MSVC)
-    # /permissive- : the core uses C++20 concepts and class-type NTTPs.
-    # /EHsc        : MANDATORY, not a style choice. CMake leaves MSBuild's
-    #                <ExceptionHandling> empty, so without this cl.exe falls
-    #                back to a non-conforming exception model: at /O2 it stops
-    #                destroying locals while an exception propagates out of a
-    #                try block. nostos's whole contract is "exception =>
-    #                scope unwinds and side effects roll back", so a build
-    #                without /EHsc silently breaks the library (Debug /Od
-    #                happens to work, Release does not).
+    # /permissive- ：核心用到 C++20 concepts 与类类型 NTTP。
+    # /EHsc        ：强制项，不是风格偏好。CMake 会把 MSBuild 的
+    #                <ExceptionHandling> 留空，缺了它 cl.exe 回退到不合规的
+    #                异常模型：/O2 下异常穿越 try 块时不再析构局部对象。
+    #                nostos 的全部契约是"异常 ⇒ scope unwind、副作用回滚"，
+    #                不开 /EHsc 的构建会静默破坏本库（Debug /Od 碰巧能跑，
+    #                Release 不行）。
     target_compile_options(nostos INTERFACE /permissive- /EHsc)
 endif()
 
@@ -57,10 +55,8 @@ if(NOSTOS_ASAN)
     if(MSVC)
         target_compile_options(nostos INTERFACE $<BUILD_INTERFACE:/fsanitize=address>)
     else()
-        # Same meaning as the MSVC branch: ASan only, so the preset means one
-        # thing on every compiler. Add ,undefined (UBSan) or switch to -fsanitize=thread
-        # for a TSan run — the design notes call for all three; neither is
-        # exercised by the presets because neither was available locally.
+        # 与 MSVC 分支同义：仅 ASan，保证 preset 在各编译器上含义一致。
+        # 需要时再追加 ,undefined（UBSan）或改用 -fsanitize=thread 跑 TSan。
         target_compile_options(nostos INTERFACE
             $<BUILD_INTERFACE:-fsanitize=address -fno-omit-frame-pointer>)
         target_link_options(nostos INTERFACE $<BUILD_INTERFACE:-fsanitize=address>)
@@ -69,13 +65,13 @@ endif()
 
 # ---- loader：库里唯一需要编译的部分 ------------------------------------------
 #
-# L2 and optional by design: the header-only core never needs it, and it keeps
-# <windows.h>/<dlfcn.h> out of every translation unit that merely loads a plugin.
+# L2、且刻意可选：header-only 核心从不需要它；它把 <windows.h>/<dlfcn.h> 挡在
+# 每个仅加载插件的翻译单元之外。
 
 add_library(nostos_loader STATIC src/loader/loader.cpp)
 add_library(nostos::loader ALIAS nostos_loader)
 target_link_libraries(nostos_loader PUBLIC nostos::core)
-# The installed name is nostos::loader (aliases are not exported; EXPORT_NAME is).
+# 安装名是 nostos::loader（alias 不会被导出，导出的是 EXPORT_NAME）。
 set_target_properties(nostos_loader PROPERTIES EXPORT_NAME loader)
 
 # ---- 安装与导出 ---------------------------------------------------------------
@@ -115,7 +111,7 @@ install(FILES
     "${CMAKE_CURRENT_BINARY_DIR}/nostosConfigVersion.cmake"
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/nostos)
 
-# ---- kit（Tier 1 能力层，docs/proposal-kit.md §5）----------------------------
+# ---- kit（Tier 1 能力层）----------------------------------------------------
 #
 # 头随 core 分发（include/nostos/kit/）；config 的 JSON 层使用 vendored
 # nlohmann/json（third_party/nlohmann/json.hpp，3.11.3，版本钉死）。
@@ -137,7 +133,7 @@ install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/nlohmann/json.hpp"
 # ---- kit_http（Tier 1 唯一的编译型组件：平台 socket 代码）--------------------
 #
 # 单线程 select 循环 + 每客户端有界缓冲（背压闸门）——设计理由见 kit/http.hpp
-# 头注释。提取自 video_stream 的 http_local，行为逐字节保留。
+# 头注释。
 add_library(nostos_http STATIC src/kit/http.cpp)
 target_include_directories(nostos_http PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)

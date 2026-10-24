@@ -1,5 +1,5 @@
 #pragma once
-// nostos L2 —— C ABI 边界的 plugin 侧（docs/design.md §4.7）。
+// nostos L2 —— C ABI 边界的 plugin 侧。
 //
 // plugin 包含本头文件（加上它所用服务的共享接口头），定义一个类，然后以
 // NOSTOS_PLUGIN 结束文件：
@@ -113,7 +113,7 @@ public:
 
     // ---- 投递器 -------------------------------------------------------------
 
-    // 取用绑定到本次激活会话的投递器（proposal-kit §6.1）。只在 activate()
+    // 取用绑定到本次激活会话的投递器。只在 activate()
     // 期间合法（此时本桥已安装）。没有该追加槽位的宿主报告
     // NOSTOS_ERR_BAD_STATE——与 publish() 对缺失能力用同一约定——于是调用方
     // 统一按“没有投递器”处理，不必手工探查 struct 大小。
@@ -196,10 +196,33 @@ public:
         return Subscription{api_, token, std::move(callable)};
     }
 
+    // 按槽订阅（尾部追加的槽位；旧宿主上返回空订阅）。slot=0 与 on() 完全
+    // 等价（广播）；slot!=0 只收向该 (evt_id, slot) 显式 emit_slot 的事件——
+    // 广播事件与其他槽都不投递。token 与 on() 共用同一空间，Subscription
+    // 析构/unsubscribe() 统一退订。
+    template <typename F>
+    Subscription on_slot(std::uint64_t evt_id, std::uint64_t slot, F fn) const {
+        if (!valid() || api_ == nullptr || !NOSTOS_HOST_HAS(api_, on_slot) ||
+            api_->on_slot == nullptr)
+            return {};
+        auto callable = std::make_shared<F>(std::move(fn));
+        const std::uint32_t token = api_->on_slot(evt_id, slot, &trampoline<F>, callable.get());
+        if (token == 0) return {};
+        return Subscription{api_, token, std::move(callable)};
+    }
+
     // 向宿主引发一个事件：原生监听者把该 struct 看作其 C++ 类型。在没有这些
     // 追加字段的宿主上不可用。
     void emit(std::uint64_t evt_id, const void* payload) const noexcept {
         if (can_emit() && api_->emit != nullptr) api_->emit(evt_id, payload);
+    }
+
+    // 按 slot 引发（尾部追加的槽位；旧宿主上为空操作）。slot=0 与 emit()
+    // 完全等价；slot!=0 是独立于广播的单播通道——只有该 (evt_id, slot) 的
+    // 显式 on_slot 订阅者收得到。slot 只做路由键，业务数据一律走 payload。
+    void emit_slot(std::uint64_t evt_id, std::uint64_t slot, const void* payload) const noexcept {
+        if (api_ != nullptr && NOSTOS_HOST_HAS(api_, emit_slot) && api_->emit_slot != nullptr)
+            api_->emit_slot(evt_id, slot, payload);
     }
 
     // ---- 日志 ---------------------------------------------------------------

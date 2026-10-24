@@ -1,5 +1,5 @@
 #pragma once
-// nostos L2 —— 动态 plugin 加载（docs/design.md §4.7, §7 Phase 3）。
+// nostos L2 —— 动态 plugin 加载。
 //
 // 一个 plugin 是一个只导出一个符号的共享库：nostos_plugin_entry()，它返回一张
 // 冻结的 C 函数表（nostos_abi.h）。plugin 自己的 C++ 设施——allocator、RTTI、
@@ -10,7 +10,7 @@
 // 进每个加载 plugin 的翻译单元。平台代码住在 src/loader/loader.cpp，header-only
 // 的核心保持 header-only。
 //
-// 卸载语义（docs/design.md §4.6）：deactivate() 是*逻辑*卸载——plugin 拆掉自己的
+// 卸载语义：deactivate() 是*逻辑*卸载——plugin 拆掉自己的
 // 世界，host 撤销 plugin 发布过的东西，代码保持映射。unmap 是显式动作（unload()
 // 或析构函数）：只要 plugin 交出去的任何东西、或它启动的任何线程仍然可达，
 // plugin 就无法被安全地 unmap。
@@ -108,7 +108,7 @@ public:
     // 并忘掉它的发布记录。noexcept 且幂等——teardown 不允许失败。
     void deactivate() noexcept;
 
-    // 可选的状态转移（热重载，Phase 4）。plugin 不支持时返回 false。绝不跨边界
+    // 可选的状态转移（热重载）。plugin 不支持时返回 false。绝不跨边界
     // 序列化：缓冲区归 host 所有，做的是拷贝。
     bool save_state(void* buf, std::size_t capacity, std::size_t* out_len) const noexcept;
     bool load_state(const void* buf, std::size_t len) noexcept;
@@ -124,7 +124,7 @@ private:
     abi::PluginSession<abi::HostBridge> session_;
 };
 
-// 懒激活策略（宿主可选装配，docs/proposal-kit.md §6.3）：
+// 懒激活策略（宿主可选装配）：
 // manifest 声明了 inject 的模块，在依赖服务就绪前不 activate（登记 PENDING）；
 // published 注册表每次变化后调用 pump_into() 重估，依赖齐了自动拉起。
 // 已激活插件的依赖被撤销时，回滚由既有语义覆盖（revoke_dependents 依赖者先行）——

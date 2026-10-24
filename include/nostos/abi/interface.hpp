@@ -1,6 +1,5 @@
 #pragma once
-// nostos L2 —— published 服务接口表（动态边界的 COM 风格那一半；
-// docs/design.md §4.7）。
+// nostos L2 —— published 服务接口表（动态边界的 COM 风格那一半）。
 //
 // *published 服务*是一个普通 C struct：首成员为 nostos::abi::TableHeader，
 // 其后是函数指针。边界两侧包含声明它的同一份小型共享头，因此由不同编译器
@@ -67,7 +66,7 @@ concept Table = std::is_standard_layout_v<T> && requires(const T& t) {
 // 盖章不等于生命周期管理：宿主注册表保存指针且绝不拥有表（published.hpp），
 // 因此一张离开作用域的已盖章表会留下悬垂的接口——而 `as_table` 无从分辨。
 // static 与成员活得够久；局部变量不行。Context::publish_static() 让编译器
-// 检查 static 存储期的情形（见 docs/known-issues.md 的 P3-4）。
+// 检查 static 存储期的情形。
 template <Table T>
 void init_table(T& table, std::uint32_t abi_version = 1) noexcept {
     static_assert(offsetof(T, header) == 0,

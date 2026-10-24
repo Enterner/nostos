@@ -9,8 +9,8 @@
 //
 // 刻意不在本层的：
 //   · 逐行分割归调用方——配套的 LineSplitter 在本头内（管道/网络分块边界不保证
-//     对齐，必须按字节流喂入）；读取线程模型也归调用方（参考 plugins/runner：
-//     两路读取线程 + 单投递线程，消除并发过 poster 边界的竞态）；
+//     对齐，必须按字节流喂入）；读取线程模型也归调用方（典型形态：两路读取线程
+//     + 单投递线程，消除并发过 poster 边界的竞态）；
 //   · 输出编码清洗归调用方——子进程字节流不保证 UTF-8（控制台代码页任意）；
 //   · 环境块覆盖：延后到第一个真实消费者出现再加。届时必须把合并后的 Unicode
 //     环境块**按名排序**——GetEnvironmentStringsW 本就有序，覆盖合并会打乱，
@@ -78,7 +78,7 @@ struct PipedSpawnOptions {
 };
 
 // start 产物的一组句柄（release_handles 的返回形态）：供把生命周期移交调用方
-// 自管容器（参考 plugins/runner 的 ChildPipes）。句柄语义见各访问器。
+// 自管容器。句柄语义见各访问器。
 struct PipedHandles {
     void* process = nullptr;      // Windows：HANDLE（可 TerminateProcess/GetExitCodeProcess）
     void* stdout_read = nullptr;  // Windows：HANDLE（可 ReadFile；EOF = 写端全关）

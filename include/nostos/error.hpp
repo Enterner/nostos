@@ -7,9 +7,8 @@
 // 编译期错误一视同仁（见 di.hpp）。
 //
 // 每个错误还以成员加访问器的形式携带自己的标识数据，host 可以程序化地处理
-// 失败，而不必解析 what()。这对既定规划中的工作很重要，比如 Phase 4 的
-// PENDING 自动再激活：host 必须知道自己在等的是*哪个* service id，才能注册
-// waiter。人读 what()，程序读访问器。
+// 失败，而不必解析 what()。例如 host 要等待某个 service 恢复时，必须知道
+// 自己在等的是*哪个* service id，才能注册 waiter。人读 what()，程序读访问器。
 //
 // NOTE: 本头文件中的任何东西都不得把异常抛出动态插件边界。跨 C ABI 的失败
 // 一律经 nostos_status 上报（nostos_abi.h，纪律 2）；这些类型供 host 侧与
@@ -56,8 +55,8 @@ public:
           name_(name),
           id_(id) {}
 
-    // host 注册 waiter（Phase 4 PENDING）或按 service 路由失败所需的东西：
-    // 与 registry 的键完全相同的 id。
+    // host 注册 waiter（等待该 service 被重新提供）或按 service 路由失败
+    // 所需的东西：与 registry 的键完全相同的 id。
     std::string_view service_name() const noexcept { return name_; }
     std::uint64_t service_id() const noexcept { return id_; }
 

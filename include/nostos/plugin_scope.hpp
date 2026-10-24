@@ -1,5 +1,5 @@
 #pragma once
-// nostos —— ABI 插件的 L0 门面（开发观察 F9 落地）。
+// nostos —— ABI 插件的 L0 门面。
 //
 // 插件纪律：abi/plugin.hpp + 宿主契约头是必经之路；本头把内核的**可逆副作用原语**
 // 开放给 ABI 插件——只包含 L0（scope/guard），零宿主世界依赖（不含 context/

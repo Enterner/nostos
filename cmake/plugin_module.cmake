@@ -29,9 +29,9 @@ set(NOSTOS_APP_DIR "${NOSTOS_ROOT}/app" CACHE PATH "参考宿主目录（contrac
 #     plugin/<名字>/build-<preset>/<config>/<名字>.dll
 # 谁需要它在别处（例如测试工程要放在测试可执行文件旁边），谁自己拷 ——
 # 产物永远属于插件，不因"被谁包含进来"而改变位置。
-# NOTE: NOSTOS_ROOT 统一指**内核仓根**（消费方 nostos_root.cmake 同语义）——
-# 曾按"父容器"语义拼过 ${NOSTOS_ROOT}/nostos/cmake/，与唯一消费方冲突令全部
-# 插件 configure 失败，统一后消灭双语义。
+# NOTE: NOSTOS_ROOT 统一指**内核仓根**——本文件里所有基于它的路径都按仓根
+# 语义拼接，不存在第二种解释。
+# 踩过: 按"父容器"语义拼 ${NOSTOS_ROOT}/nostos/cmake/，全部插件 configure 失败。
 include("${NOSTOS_ROOT}/cmake/asan_runtime.cmake")
 
 function(nostos_plugin_module name)
@@ -66,7 +66,7 @@ endfunction()
 function(nostos_plugin_artifact_dir target)
     if(NOT NOSTOS_PRESET_LABEL)
         # 没有预设标签时，产物落在本工程构建树的默认位置（多配置生成器还多一层 <config>），
-        # 而宿主按"插件目录/build-<preset>/<config>/"的文档约定找模块——绕开预设构建会让它
+        # 而宿主按"插件目录/build-<preset>/<config>/"找模块——绕开预设构建会让它
         # 扑空。这里点名提醒，避免"构建成功却加载不到"的静默错位。
         message(STATUS "nostos: ${target} 未设 NOSTOS_PRESET_LABEL —— 产物在默认构建树，"
                        "不在 build-<preset>/（宿主按后者找模块；用各插件的 CMakePresets 构建可消除本提示）")

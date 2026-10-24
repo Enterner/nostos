@@ -169,7 +169,7 @@ public:
     Executor& executor() noexcept { return core_.executor(); }
     void set_executor(Executor& e) noexcept { core_.set_executor(e); }
 
-    // poster 队列排水（M1）：宿主主循环每拍调用；在**调用者线程**上、
+    // poster 队列排水：宿主主循环每拍调用；在**调用者线程**上、
     // 以各 poster 领取者的桥 Guard 执行已投递任务。未领取过 poster 时为空操作。
     void drain_posted() {
         if (has_abi_bridge()) abi_bridge().drain_posted();

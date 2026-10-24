@@ -1,6 +1,5 @@
 #pragma once
-// nostos L2 —— published 服务：服务系统中跨越动态 plugin 边界的那一半
-// （docs/design.md §4.7）。
+// nostos L2 —— published 服务：服务系统中跨越动态 plugin 边界的那一半。
 //
 // 刻意分成两层：
 //   * native 服务（registry.hpp）是以 svc_id 为键的 C++ 对象——快、带类型，

@@ -1,10 +1,9 @@
 #pragma once
 // nostos L0 —— Executor 接缝。
 //
-// 核心按设计单线程（见 docs/design.md §4.8）：激活、teardown 与 event
+// 核心按设计单线程：激活、teardown 与 event
 // dispatch 全部跑在 host 提供的 Executor 上。文件监听、定时器与工作线程只向
-// 它 post()。这套接口从 Phase 1 起就存在，因此以后引入多线程只是换一个
-// Executor，而不是重新设计。
+// 它 post()。引入多线程只是换一个 Executor，而不是重新设计。
 
 #include <cstddef>
 #include <functional>
@@ -82,7 +81,7 @@ private:
 // 自身的纪律是回滚不许失败（scope.hpp），因此抛异常的任务一定是用户代码里的
 // bug——这个包装只是把它从 terminate() 变成一个*被上报的* bug。
 //
-// 多线程备注（README "单线程核心"）：跨线程的 executor 就是这个形态——包装
+// 多线程备注：跨线程的 executor 就是这个形态——包装
 // 器不拥有队列也不拥有锁，只在内层 executor 排队的基础上加一层失败隔离。
 //
 // sink 按值拷贝进每个任务，而不是按引用捕获：排队的任务可能比本对象活得久

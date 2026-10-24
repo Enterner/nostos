@@ -1,9 +1,9 @@
 #pragma once
 // nostos-kit —— 定时器：every / after / throttle / debounce。
 //
-// 回调经 dispatch 投递（docs/proposal-kit.md §5.3）：
+// 回调经 dispatch 投递：
 //   · 原生组件：传 Context::executor() 的 post 包装；
-//   · ABI 插件：传 poster 的 post 包装（§6.1）。
+//   · ABI 插件：传 poster 的 post 包装。
 // 定时器线程只算"到点了"，真正的工作体在 dispatch 指定的线程上执行。
 // 析构即停止（在跑的回调不受影响——它们已被投递）。
 

@@ -6,7 +6,7 @@
 // JSON 层使用 vendored nlohmann/json（Tier 1 首个准入，3.11.3，版本钉死）；
 // 只在 load_file 一处使用——其余部分零依赖。
 //
-// 环境层的变更无通知机制（getenv 无回调）：该层的变更不触发 on_change，文档同此口径。
+// 环境层的变更无通知机制（getenv 无回调）：该层的变更不触发 on_change。
 
 #include <nlohmann/json.hpp>
 

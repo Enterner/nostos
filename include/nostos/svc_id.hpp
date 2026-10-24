@@ -46,7 +46,7 @@ constexpr std::uint64_t fnv1a64(std::string_view s) noexcept {
 }  // namespace detail
 
 // service 或 event 的身份。两个名字绝不许映射到同一个 id——di.hpp 在编译期
-// 对全部 Provides 做去重断言（Phase 2）。
+// 对全部 Provides 做去重断言。
 template <fixed_string S>
 inline constexpr std::uint64_t svc_id = detail::fnv1a64(S.view());
 

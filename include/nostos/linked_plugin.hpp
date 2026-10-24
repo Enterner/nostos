@@ -65,7 +65,7 @@ public:
     bool loaded() const noexcept { return session_.attached(); }
     bool active() const noexcept { return session_.active(); }
 
-    // 与 DynamicPlugin 同名同形：两种模式的宿主代码因此可以共用（见 app/main.cpp）。
+    // 与 DynamicPlugin 同名同形：两种模式的宿主代码因此可以共用。
     void activate(abi::HostBridge& host) { session_.activate(host); }
     void deactivate() noexcept { session_.deactivate(); }
 

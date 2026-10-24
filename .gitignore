@@ -5,5 +5,4 @@ out/
 .vs/
 .vscode/
 *.user
-# 本地文档不入库
-docs/
+

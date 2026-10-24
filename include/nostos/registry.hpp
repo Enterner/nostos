@@ -10,7 +10,7 @@
 // 检查只是这套约束之外再加的一道 debug 保险（belt-and-braces）。
 //
 // 原生 service 是 C++ 对象，只存在于单个 ABI 域之内；跨越 C 边界是 *published*
-// service（COM 风格接口表，Phase 3）的职责。
+// service（COM 风格接口表）的职责。
 
 #include <cstddef>
 #include <cstdint>

@@ -8,7 +8,7 @@
 # （那是库的要求），这里只负责把运行时拷到每个目标旁边。
 #
 # 用 include() 引入，而不是定义在库的 CMakeLists 里：CMake 的函数只对"定义它的目录及其
-# 子目录"可见，而需要它的 plugin/ 与 nostos_test/ 都是库的**父**目录。
+# 子目录"可见，而需要它的目标（上层的插件工程等）都是库的**父**目录。
 
 function(nostos_copy_asan_runtime target)
     if(NOT NOSTOS_ASAN OR NOT MSVC)

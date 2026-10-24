@@ -98,7 +98,7 @@ public:
     bool empty() const noexcept { return owned_.empty(); }
     std::size_t size() const noexcept { return owned_.size(); }
 
-    // ---- effect 记账（诊断；docs/proposal-kit.md §6.2）---------------------
+    // ---- effect 记账（诊断）----------------------------------------------
     //
     // defer/own 管撤销；effect 额外给每笔副作用一个 **label**，让它能被看见：
     // get_effects() 按登记顺序返回仍然挂牌的 label（"我还剩什么没撤"）。

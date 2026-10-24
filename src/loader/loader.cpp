@@ -6,7 +6,7 @@
 // 完整的 <windows.h> 会拖进 COM 头，其中的 `#define interface struct` 会破坏
 // nostos::Context::interface；它还会把 Win32 API 名字放进全局命名空间，与普通
 // 标识符相撞。WIN32_LEAN_AND_MEAN 避免拉进 COM 那一半；而顺序安排正是其余部分
-// 得以安全的原因（见 README，设计纪律 6）。
+// 得以安全的原因。
 
 #include "nostos/loader.hpp"
 
@@ -315,7 +315,7 @@ void DynamicPlugin::unload() noexcept {
     library_.close();
 }
 
-// ---- LazyGate（懒激活策略，docs/proposal-kit.md §6.3）------------------------
+// ---- LazyGate（懒激活策略）--------------------------------------------------
 //
 // 宿主策略，不是内核机制：内核只提供"published 注册表"与"依赖者先行回滚"，
 // 这里的全部工作是——activate 前对照 manifest 的 inject 记账，缺谁登记谁；
@@ -330,8 +330,8 @@ bool LazyGate::submit(DynamicPlugin& plugin) {
     const nostos_manifest* manifest =
         NOSTOS_PLUGIN_HAS(api, manifest) ? api->manifest : nullptr;
 
-    // manifest 的 inject 就是插件的依赖边（差距清单里"插件不记录依赖边"那条，
-    // 从这里开始补上：缺的依赖登记在 gate 的 PENDING 里，宿主可查询）。
+    // manifest 的 inject 就是插件的依赖边：缺的依赖登记在 gate 的 PENDING 里，
+    // 宿主可查询（重估入口 pump_into）。
     std::vector<std::uint64_t> missing;
     if (manifest != nullptr && manifest->inject != nullptr) {
         for (const char* const* name = manifest->inject; *name != nullptr; ++name) {

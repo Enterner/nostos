@@ -1,6 +1,6 @@
 #pragma once
 // ===========================================================================
-// nostos kit —— scratch：同步 emit 的载荷稳定缓冲（F13）
+// nostos kit —— scratch：同步 emit 的载荷稳定缓冲
 //
 // 纪律：ABI 事件载荷里的 `const char*` 只保证**调用期有效**——载荷字符串必须
 // 比 emit 调用活得更久。临时字符串直接 `.c_str()` 是悬垂：emit 返回前临时
@@ -12,7 +12,7 @@
 //   const ToolResult e{turn, name.c_str(), ok, trim(brief, 200).c_str()};
 //   host.emit(tool_result, &e);
 //
-//   // F13：Scratch 在作用域内持有拷贝——作用域即寿命，地址跨 hold 稳定
+//   // Scratch 在作用域内持有拷贝——作用域即寿命，地址跨 hold 稳定
 //   kit::Scratch scratch;
 //   const ToolResult e{turn, scratch.hold(name), ok, scratch.hold(trim(brief, 200))};
 //   host.emit(tool_result, &e);

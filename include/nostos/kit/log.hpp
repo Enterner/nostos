@@ -1,11 +1,10 @@
 #pragma once
-// nostos-kit —— 日志服务（docs/proposal-kit.md §5.1）。
+// nostos-kit —— 日志服务。
 //
 // 命名 logger + 级别过滤 + 多 sink；可选异步（有界队列 + block/drop_oldest 溢出策略）。
-// 零第三方依赖（spdlog 列为 Tier 1 备选，复杂度失控再准入）。
+// 零第三方依赖。
 //
-// 与宿主的关系：sink 是普通回调——宿主把 sink 接到自己的日志出口
-// （参考宿主：sink → host.log → app.log 事件），kit 不依赖任何宿主概念。
+// 与宿主的关系：sink 是普通回调——宿主把 sink 接到自己的日志出口，kit 不依赖任何宿主概念。
 // ABI 插件：经 abi/nostos_services.h 的 nostos_log_v1 表取用。
 
 #include <atomic>

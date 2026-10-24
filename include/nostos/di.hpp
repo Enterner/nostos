@@ -47,8 +47,7 @@
 // 而非字面量 —
 //     nostos::Svc<nostos::fixed_string<6>{char120,46,115,118,99,0}, int>   // "x.svc"
 // — 而 GCC/Clang 打印字面量。组件名总是以明文出现，因此无论哪种渲染
-// 诊断都可用；tests/compile_fail/expect_compile_failure.cmake 正是为此
-// 对两种渲染都做了断言。
+// 诊断都可用。
 //
 // 声明的形式本身也会被校验：Requires/Provides 必须是
 // std::tuple<Svc<Name, T>...>。

@@ -301,8 +301,7 @@ public:
     // publish() 的编译期受检形式，用于具有 **static storage duration** 的
     // 表。引用类型的非类型模板实参只能指名具有静态存储期的对象，因此发布
     // 局部对象 — 存储期不是类型的一部分，任何其他手段都抓不到这个错误 —
-    // 会直接编译失败，而不是让 registry 留下一个指向死栈帧的指针
-    // （docs/known-issues.md 的 P3-4）。
+    // 会直接编译失败，而不是让 registry 留下一个指向死栈帧的指针。
     //
     // 表若是组件的成员，请用 publish()：其生命周期属于组件，已由 scope
     // 管辖，而引用 NTTP 无法指名非静态成员。在这里传入局部对象（或局部
@@ -342,8 +341,7 @@ public:
 
     // 订阅事件并把 token 直接交给本组件的 scope，使订阅随组件做过的一切
     // 一起 teardown。多数组件应该用这个形式：单用 on() 返回的 token 必须
-    // 妥善持有，token 被丢弃时会在语句末尾退订 — 这是静默空操作而非
-    // 错误（见 tests/test_event.cpp 与 docs/known-issues.md 的 P2-7）。
+    // 妥善持有，token 被丢弃时会在语句末尾退订 — 这是静默空操作而非错误。
     // 需要订阅活得比某个 scope 更久、或要提前取消时，才用 on()。
     template <EventType E, typename F>
         requires std::invocable<std::decay_t<F>&, const E&>

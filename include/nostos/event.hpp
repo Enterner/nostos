@@ -8,10 +8,14 @@
 //   注意可达范围：经由 hub 只能到达 EmitPolicy——EventHub::bus<E>() 创建
 //   EventBus<E>，typed_bus<E>() 发出的也是同一个广播类型——因此 Host、
 //   Context 与 C ABI 能做的只有广播。bail 与 waterfall 供直接构造的 bus 使用
-//   （tests/test_event.cpp 两者都有演示），这也意味着它们没有 raw 通道。
+//   这也意味着它们没有 raw 通道。
 // * 重入：dispatch() 在 listener 列表的快照上迭代，因此 listener 可以随意
 //   subscribe/unsubscribe/emit；dispatch 中途发生的 unsubscribe 经订阅的
 //   控制块照样生效。
+// * 寻址：emit/订阅可携带 slot（on_slot/emit_slot）。slot=0 是广播，与不带
+//   slot 的 on/emit 完全等价；slot!=0 是独立于广播的单播通道——只到达该
+//   (event, slot) 的显式订阅者，类型化监听者与广播 raw 订阅者都收不到。
+//   slot 只做路由键，内核不登记其含义；业务数据仍走 payload。
 //
 // 生存期：Subscription 不得比它的 EventBus 活得久。在 Host 内部这由构造方式
 // 保证（component 的 scope 先于 host 的 hub unwind）。
@@ -20,7 +24,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
+#include <tuple>
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
@@ -193,8 +199,8 @@ public:
     // 9 倍，这就是上面重入承诺的代价。listener 的捕获要保持小：按值捕获大对象
     // 会把 std::function 顶出小缓冲区优化，每个 listener 每次 dispatch 多一次
     // 堆分配（实测：N=10、64 字节捕获时每次 dispatch 11 次分配）。按引用或
-    // shared_ptr 捕获。换成 copy-on-write 的槽位向量能收回全部 9 倍（实测；
-    // 见 docs/known-issues.md 的 P2-6），且不放弃重入承诺。
+    // shared_ptr 捕获。换成 copy-on-write 的槽位向量能收回全部 9 倍（实测），
+    // 且不放弃重入承诺。
     decltype(auto) dispatch(const E& e) {
         // 拷贝的是 shared_ptr 而非 vector：零分配，且 listener 运行期间看到的
         // 表不可变，因此在 listener 内部 subscribe / unsubscribe / emit 始终
@@ -256,7 +262,8 @@ private:
 // 每个 event id 拥有一条 bus，外加供 C ABI 层接入的类型擦除 raw 通道：
 // host_api::on(evt_id, fn, user) 变成 on_raw()，插件引发 event 变成
 // emit_raw()。同一个 event 的 raw listener 总是在类型化 listener 之后、按
-// 注册顺序运行。
+// 注册顺序运行。slot 单播通道（on_slot/emit_slot，slot!=0）与广播通道并行：
+// 共用同一 token 空间与退订路径，但派发互相隔绝（见 emit_slot 的注释）。
 class EventHub {
 public:
     EventHub() = default;
@@ -282,13 +289,25 @@ public:
     // ---- raw 通道 ----------------------------------------------------------
 
     // fn 收到的载荷是它在本进程中的原样存在，调用期有效。无法注册 listener
-    // 时返回 0。
-    [[nodiscard]] std::uint32_t on_raw(std::uint64_t evt_id, std::function<void(const void*)> fn) {
+    // 时返回 0。等价于 on_slot(evt_id, 0, fn)（广播）。
+    [[nodiscard]] std::uint32_t on_raw(std::uint64_t evt_id,
+                                       std::function<void(const void*)> fn) {
+        return on_slot(evt_id, 0, std::move(fn));
+    }
+
+    // 按槽订阅：slot=0 = 广播（等价 on_raw）；slot!=0 = 只收向该 (evt_id, slot)
+    // 显式 emit_slot 的事件。token 与广播订阅共用同一空间，off_raw() 统一退订。
+    [[nodiscard]] std::uint32_t on_slot(std::uint64_t evt_id, std::uint64_t slot,
+                                        std::function<void(const void*)> fn) {
         if (!fn) return 0;
         const std::uint32_t token = next_raw_token_++;
         auto control = std::make_shared<detail::SubControl>();
-        raw_[evt_id].slots.push_back(RawSlot{token, std::move(fn), std::move(control)});
-        raw_tokens_.emplace(token, evt_id);
+        if (slot == 0)
+            raw_[evt_id].slots.push_back(RawSlot{token, std::move(fn), std::move(control)});
+        else
+            slot_raw_[{evt_id, slot}].slots.push_back(
+                RawSlot{token, std::move(fn), std::move(control)});
+        raw_tokens_.emplace(token, RawToken{evt_id, slot});
         return token;
     }
 
@@ -296,19 +315,31 @@ public:
         if (token == 0) return;
         auto t = raw_tokens_.find(token);
         if (t == raw_tokens_.end()) return;
-        const std::uint64_t id = t->second;
+        const RawToken key = t->second;
         raw_tokens_.erase(t);
-        auto channel = raw_.find(id);
-        if (channel == raw_.end()) return;
-        auto& slots = channel->second.slots;
-        for (auto it = slots.begin(); it != slots.end(); ++it) {
+        std::vector<RawSlot>* slots = nullptr;
+        if (key.slot == 0) {
+            auto channel = raw_.find(key.evt_id);
+            if (channel == raw_.end()) return;
+            slots = &channel->second.slots;
+        } else {
+            auto channel = slot_raw_.find(key);
+            if (channel == slot_raw_.end()) return;
+            slots = &channel->second.slots;
+        }
+        for (auto it = slots->begin(); it != slots->end(); ++it) {
             if (it->token == token) {
                 if (it->control) it->control->active = false;
-                slots.erase(it);
+                slots->erase(it);
                 break;
             }
         }
-        if (slots.empty()) raw_.erase(channel);
+        if (slots->empty()) {
+            if (key.slot == 0)
+                raw_.erase(key.evt_id);
+            else
+                slot_raw_.erase(key);
+        }
     }
 
     // 从 C++ 之外抵达的载荷（插件 emit 一个共享头里的 C 结构体）。E 的原生
@@ -324,14 +355,47 @@ public:
         return true;
     }
 
-    bool knows(std::uint64_t evt_id) const noexcept { return buses_.count(evt_id) != 0; }
-
-    std::size_t raw_listener_count(std::uint64_t evt_id) const noexcept {
-        auto it = raw_.find(evt_id);
-        return it == raw_.end() ? 0 : it->second.slots.size();
+    // 按 slot 引发：slot=0 与 emit_raw() 完全等价。slot!=0 是独立派发通道，
+    // 不是广播路径上的过滤——只投递给该 (evt_id, slot) 的显式订阅者，既不进
+    // 类型化 bus（原生监听者收不到），也不进广播 raw 通道。若不是过滤而是
+    // 放行，子代理事件会在原生侧复活泄漏——这正是 slot 要消灭的缺陷。
+    // payload 调用期有效；派发在调用线程上同步进行，与广播事件互为先后序。
+    void emit_slot(std::uint64_t evt_id, std::uint64_t slot, const void* payload) {
+        if (slot == 0) {
+            emit_raw(evt_id, payload);
+            return;
+        }
+        auto it = slot_raw_.find({evt_id, slot});
+        if (it == slot_raw_.end()) return;
+        auto snapshot = it->second.slots;  // 重入安全，与 dispatch_raw 同一纪律
+        for (auto& s : snapshot) {
+            if (s.control->active) s.fn(payload);
+        }
     }
 
-    std::size_t raw_channel_count() const noexcept { return raw_.size(); }
+    // ---- 内省（诊断口径：广播与 slot 通道都计入）---------------------------
+
+    // 该 id 上存在任何活动：类型化 bus、广播 raw 或任一 slot 通道。与 emit_raw
+    // 的返回值不等价——后者只看类型化 bus，raw-only 的 id 在那里是 false。
+    bool knows(std::uint64_t evt_id) const noexcept {
+        if (buses_.count(evt_id) != 0 || raw_.count(evt_id) != 0) return true;
+        // slot_raw_ 按 (evt_id, slot) 有序，同一 evt_id 的槽位连续：定位首项即可。
+        auto it = slot_raw_.lower_bound(RawToken{evt_id, 0});
+        return it != slot_raw_.end() && it->first.evt_id == evt_id;
+    }
+
+    // 该 id 上的 raw 订阅总数：广播 + 全部 slot 槽位求和。
+    std::size_t raw_listener_count(std::uint64_t evt_id) const noexcept {
+        std::size_t count = 0;
+        if (auto it = raw_.find(evt_id); it != raw_.end()) count += it->second.slots.size();
+        for (auto it = slot_raw_.lower_bound(RawToken{evt_id, 0});
+             it != slot_raw_.end() && it->first.evt_id == evt_id; ++it)
+            count += it->second.slots.size();
+        return count;
+    }
+
+    // raw 通道总数：广播通道 + slot (evt_id, slot) 通道。
+    std::size_t raw_channel_count() const noexcept { return raw_.size() + slot_raw_.size(); }
 
     // 由 EventBus::notify_raw 调用。
     void dispatch_raw(std::uint64_t evt_id, const void* payload) {
@@ -374,10 +438,20 @@ private:
         std::vector<RawSlot> slots;
     };
 
+    // 订阅 token 的落点：slot=0 是广播通道（raw_），slot!=0 是单播通道。
+    struct RawToken {
+        std::uint64_t evt_id;
+        std::uint64_t slot;
+        friend bool operator<(const RawToken& a, const RawToken& b) noexcept {
+            return std::tie(a.evt_id, a.slot) < std::tie(b.evt_id, b.slot);
+        }
+    };
+
     std::unordered_map<std::uint64_t, std::unique_ptr<detail::BusBase>> buses_;
     std::unordered_map<std::uint64_t, std::function<void(const void*)>> emitters_;
     std::unordered_map<std::uint64_t, RawChannel> raw_;
-    std::unordered_map<std::uint32_t, std::uint64_t> raw_tokens_;
+    std::map<RawToken, RawChannel> slot_raw_;
+    std::unordered_map<std::uint32_t, RawToken> raw_tokens_;
     std::uint32_t next_raw_token_ = 1;
 };
 

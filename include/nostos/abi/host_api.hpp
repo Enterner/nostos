@@ -3,7 +3,8 @@
 //
 // HostBridge 把 HostCore 变成 plugin 拿到的无状态 nostos_host_api 表。每个
 // thunk 都是 noexcept 并吞掉异常：任何东西都不得跨越边界（纪律 2），宿主侧
-// 的失败也不例外。
+// 的失败也不例外。吞掉 ≠ 无声——事件订阅回调逐个隔离（一个订阅者抛出不阻
+// 断同事件的其他订阅者），吞掉的异常一律落 error 日志。
 //
 // 冻结的表没有用户指针，所以 thunk 经一个线程本地的*当前桥*来解析“是哪个
 // 宿主？”。Host<...> 在创建时安装自己的桥（install()），这意味着 plugin 代码
@@ -298,6 +299,22 @@ public:
 
     // ---- 由 thunk 调用 ----------------------------------------------------
 
+    // 吞异常的统一出口（noexcept 语境专用）：重掷当前异常只为取到 what()。
+    // 日志通道自身再出异常就放弃——兜底路径绝不允许成为新的故障源。
+    void log_swallowed(const char* context) noexcept {
+        try {
+            try {
+                throw;
+            } catch (const std::exception& e) {
+                core_->log(4, std::string("nostos: ") + context + ": " + e.what());
+            } catch (...) {
+                core_->log(4,
+                           std::string("nostos: ") + context + " (non-standard exception)");
+            }
+        } catch (...) {
+        }
+    }
+
     void note_publish(std::uint64_t service_id) { published_.push_back(service_id); }
 
     void forget_publish(std::uint64_t service_id) {
@@ -372,10 +389,21 @@ inline std::uint32_t on_slot_thunk(std::uint64_t event_id, std::uint64_t slot,
     try {
         // 订阅比本次调用活得更久，可能从任何宿主栈上触发；它会自行重装桥，
         // 于是回调里再调宿主仍能解析到正确的 core。
+        // NOTE: 每个订阅者单独隔离异常——EventHub 的派发循环对回调无隔离，一
+        // 个订阅者抛出会中止同事件后面所有订阅者；对多插件共听一个事件的场景，
+        // 那等于一个插件的 bug 拉全体殉葬。隔离在 ABI 边界做（而非 EventHub），
+        // 是为了不改变原生 C++ 用法的异常语义。踩过：插件事件回调内抛出被
+        // emit_thunk 静默吞掉、同事件的其他订阅者（如 UI 落盘）也没跑，故障
+        // 无任何痕迹。
         const std::uint32_t token = bridge->core().events().on_slot(
             event_id, slot, [bridge, fn, user](const void* payload) {
                 const HostBridge::Guard guard{*bridge};
-                fn(user, payload);
+                try {
+                    fn(user, payload);
+                } catch (...) {
+                    bridge->log_swallowed(
+                        "an event subscriber threw; isolated for sibling subscribers");
+                }
             });
         // 记下它，plugin 的会话结束时宿主才能收回——哪怕 plugin 从不调用
         // off()。slot 订阅与广播订阅共用同一 token 空间与同一账本，因此
@@ -455,6 +483,9 @@ inline void emit_thunk(std::uint64_t event_id, const void* payload) noexcept {
     try {
         bridge->core().events().emit_raw(event_id, payload);
     } catch (...) {
+        // 订阅者已各自隔离；能到这里的是派发机制自身的异常（快照分配等）——
+        // 落日志留排查入口，不再无声
+        bridge->log_swallowed("event dispatch threw");
     }
 }
 
@@ -465,6 +496,7 @@ inline void emit_slot_thunk(std::uint64_t event_id, std::uint64_t slot,
     try {
         bridge->core().events().emit_slot(event_id, slot, payload);
     } catch (...) {
+        bridge->log_swallowed("slot event dispatch threw");
     }
 }
 

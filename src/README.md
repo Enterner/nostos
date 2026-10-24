@@ -10,4 +10,4 @@
 - "核心零依赖 header-only" 的承诺因此继续成立 —— 不用 loader 的用户一行都不用编。
 
 应用程序的源码不在这里：宿主应用在 `app/`，插件在 `plugin/`。
-装给第三方的包只包含 `include/nostos/**` + 编译好的 `nostos::loader`（见 `nostos_test/package_consumer/`）。
+装给第三方的包只包含 `include/nostos/**` + 编译好的 `nostos::loader`。

@@ -97,7 +97,7 @@ kit 侧的"effect 记账"助手：`kit::Subscriptions`（VS Code Disposable 形�
 
 - **不做**跨进程/网络插件分发、反射式配置装配、默认状态序列化、把物理卸载当正确性承诺。
 - **还没有**：PENDING 自动重激活、ServiceSlot 热替换、文件监控热重载、quiescence/drain 在途计数、插件猝死观测（见设计文档 §7 的 Phase 4）。
-- **单线程核心**：激活/卸载/派发都在一个 Executor 上；`Executor` 是留给将来的接缝（`Host::set_executor` / `Context::executor`），核心自身目前同步执行、不投递。跨线程投递要你自己实现加锁的 Executor；`SafeExecutor` 不是它 —— 它只给任务加**失败隔离**（任务抛异常时报告给 sink，而不是把泵打崩），见 `executor.hpp` 与 `nostos_test/test_executor.cpp`。
+- **单线程核心**：激活/卸载/派发都在一个 Executor 上；`Executor` 是留给将来的接缝（`Host::set_executor` / `Context::executor`），核心自身目前同步执行、不投递。跨线程投递要你自己实现加锁的 Executor；`SafeExecutor` 不是它 —— 它只给任务加**失败隔离**（任务抛异常时报告给 sink，而不是把泵打崩），见 `executor.hpp`。
 - **不含业务设施**：没有 UI、没有网络、没有日志实现 —— 只有一条 `LogSink` 接缝（`HostCore::set_log_sink`）。
 - **插件能力有边界**：插件只能提供 published 表（原生 C++ 服务跨不了 ABI）；插件不是 `Host` 组件，因此没有编译期 Requires/Provides 检查，也不会自动重激活。
 

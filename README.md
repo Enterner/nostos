@@ -12,7 +12,7 @@
 - 交付：`find_package(nostos)` → `nostos::core`（头文件）/ `nostos::loader` / `nostos::kit` / `nostos::kit_http`
 
 ```bash
-# 在本目录（nostos/）里构建并安装 —— 库是独立工程，不需要仓库里的其它两个工程
+# 在本目录里构建并安装 —— 这个仓库就是库本体
 cmake --preset release && cmake --build --preset release
 cmake --install build-release --prefix <prefix> --config RelWithDebInfo
 ```
@@ -35,14 +35,14 @@ target_link_libraries(my_host PRIVATE nostos::core nostos::loader)
 | `scope.hpp` | `Scope`：`own(guard)` / `defer(fn)` / `spawn()` 子作用域 / `reset()`；LIFO 逆序回滚，幂等 `noexcept` |
 | `plugin_scope.hpp` | **ABI 插件的 L0 门面**：把 Scope/guard 开放给动态插件（插件内多步事务"任一步失败 LIFO 还原"的入口；只含 L0，零宿主世界依赖） |
 | `executor.hpp` | `Executor` 接缝（`post`）+ `InlineExecutor` / `QueueExecutor`：单线程核心的调度口 |
-| `error.hpp` | `nostos_error` 家族：`missing_service` / `duplicate_service` / `type_mismatch` / `undeclared_provide` / `event_name_collision` / `plugin_error`，**消息永远点名** |
+| `error.hpp` | `nostos_error` 家族：`missing_service` / `duplicate_service` / `type_mismatch` / `undeclared_provide` / `undeclared_require` / `declared_type_mismatch` / `bad_published_table` / `host_state_error` / `event_name_collision` / `plugin_error`，**消息永远点名** |
 
 ### 2. 组合层（L1）
 
 | 头文件 | 提供 |
 |---|---|
 | `registry.hpp` | `ServiceRegistry`（名称哈希键 + 域内类型安检）+ `ServiceHandle`（保活句柄，撤销后也不悬垂） |
-| `event.hpp` | `EventHub` / `EventBus<E, Policy>`：`EmitPolicy`（通知）/ `BailPolicy`（首个 true 短路）/ `WaterfallPolicy`（载荷逐级变换）；**快照派发**（监听器内增删订阅安全）；`Subscription` RAII 退订；**raw 通道**（`on_raw`/`emit_raw`，C ABI 的接入点） |
+| `event.hpp` | `EventHub` / `EventBus<E, Policy>`：`EmitPolicy`（通知）/ `BailPolicy`（首个 true 短路）/ `WaterfallPolicy`（载荷逐级变换）；**快照派发**（监听器内增删订阅安全）；`Subscription` RAII 退订；**raw 通道**（`on_raw`/`emit_raw`，C ABI 的接入点）；**slot 单播**（`on_slot`/`emit_slot`，slot=0 等价广播、slot!=0 独立于广播） |
 | `context.hpp` | `Context`：`provide<Name,T>()` / `service<Name,T>()` / `require` / `on<E>` / `emit` / `publish<Name>(table)` / `interface<Name,T>()`；`HostCore` 是运行期账本（服务、事件、published、依赖边、provide 记录、日志出口） |
 | `di.hpp` | 编译期依赖契约：`Svc<Name,T>`、`Requires` / `Provides`，三条规则（Requires ⊆ ∪Provides、同 id 类型一致、Provides 唯一）+ **具名诊断** |
 | `component.hpp` | 组件协议：`activate(Context&)` 事务体 + 可选 `onStop()` |
@@ -55,9 +55,9 @@ target_link_libraries(my_host PRIVATE nostos::core nostos::loader)
 |---|---|
 | `abi/nostos_abi.h` | **冻结**的纯 C 契约：`nostos_host_api`（宿主能力表）/ `nostos_plugin_api`（插件导出表）/ `nostos_status`；字段只在**尾部追加**，`NOSTOS_HOST_HAS(api, field)` 逐字段门控 |
 | `abi/interface.hpp` | 版本化接口表：`TableHeader{struct_size, abi_version}`、`init_table` / `as_table<T>` / `query<T>` / `status_name` |
-| `abi/host_api.hpp` | 宿主侧桥 `HostBridge`：7 个 thunk（`service`/`on`/`off`/`log` + `publish`/`unpublish`/`emit`），全部 `noexcept` 吞异常；发布会话（失败激活零残留）；线程局部"当前桥"；`Guard` 显式作用域 |
+| `abi/host_api.hpp` | 宿主侧桥 `HostBridge`：11 个 thunk（`service`/`on`/`off`/`log` + `publish`/`unpublish`/`emit`/`acquire_poster`/`published_list`/`on_slot`/`emit_slot`），全部 `noexcept` 吞异常；发布会话（失败激活零残留）；线程局部"当前桥"；`Guard` 显式作用域 |
 | `abi/plugin.hpp` | 插件侧助手：`nostos::abi::Host`（能力按 `struct_size` 门控）、RAII `Subscription`、`NOSTOS_PLUGIN_VERSION` / `NOSTOS_PLUGIN(Type)` 入口宏（静态链接模式的宿主用 `NOSTOS_PLUGIN_ENTRY_DECL()` 声明同一个符号）；插件状态由插件自己 new/delete |
-| `loader.hpp` + `src/loader/loader.cpp` | **动态加载**：`DynamicLibrary`（`LoadLibraryExW`/`dlopen` 的 RAII 封装、UTF-8 路径）/ `DynamicPlugin`（校验 `struct_size`/`abi_version`、逻辑卸载、显式物理 unmap、可选 `save_state`/`load_state`） |
+| `loader.hpp` + `src/loader/loader.cpp` | **动态加载**：`DynamicLibrary`（`LoadLibraryExW`/`dlopen` 的 RAII 封装、UTF-8 路径）/ `DynamicPlugin`（校验 `struct_size`/`abi_version`、逻辑卸载、显式物理 unmap、可选 `save_state`/`load_state`）/ `LazyGate`（按 manifest 的 inject 做懒激活：依赖未就绪登记 PENDING，published 变化后 pump 自动拉起） |
 | `linked_plugin.hpp` | **静态链接**：`LinkedPlugin` —— 同一个 plugin.cpp 直接编进宿主时用它驱动，不链接 loader；与 `DynamicPlugin` 共用 `abi::PluginSession`（校验/会话/回滚/状态转移），所以两种编法行为逐字相同 |
 
 ### 4. kit 能力层（Tier 1，`nostos/kit/*`）
@@ -70,8 +70,10 @@ target_link_libraries(my_host PRIVATE nostos::core nostos::loader)
 | `kit/task.hpp` | header-only | 后台任务：block（join）/ discard（安全逃逸）两种关停语义 + 并发上限 |
 | `kit/scratch.hpp` | header-only | 同步 emit 的载荷稳定缓冲：`Scratch::hold(string)→const char*`，作用域即寿命，地址跨后续 hold 稳定（事件载荷"调用期有效"纪律的调用点表达） |
 | `kit/http.hpp` | `nostos::kit_http` | 单线程 select 循环 HTTP/1.1 + SSE：每客户端有界缓冲做背压，慢客户端不可能拖住别人 |
-| `kit/win.hpp` | header-only | 文件选择对话框 + UTF-8 转换（非 Windows 降级） |
+| `kit/win.hpp` | header-only | UTF-8 ↔ 宽字符转换（非 Windows 平台恒返回空） |
 | `kit/process.hpp` | header-only | 子进程生命周期（Windows） |
+| `kit/piped_process.hpp` | header-only | 管道化子进程：stdout/stderr 捕获 + Job Object 进程树终止（Windows；非 Windows start 恒 false） |
+| `kit/poster.hpp` | header-only | poster 投递助手：`poster_submit`（闭包打包成堆块，post 失败/会话作废两路都回收）与 `poster_submit_await`（同步投递、阻塞等完成） |
 | `abi/nostos_services.h` | header-only | 知名服务表的 C 布局（`nostos.log.v1` 等） |
 
 kit 侧的"effect 记账"助手：`kit::Subscriptions`（VS Code Disposable 形态，逆序统一释放）。
@@ -96,7 +98,7 @@ kit 侧的"effect 记账"助手：`kit::Subscriptions`（VS Code Disposable 形�
 ## 不提供什么（明确不做，或属于 Phase 4）
 
 - **不做**跨进程/网络插件分发、反射式配置装配、默认状态序列化、把物理卸载当正确性承诺。
-- **还没有**：PENDING 自动重激活、ServiceSlot 热替换、文件监控热重载、quiescence/drain 在途计数、插件猝死观测（见设计文档 §7 的 Phase 4）。
+- **还没有**：内核级的 PENDING 自动重激活（宿主可用 `LazyGate` 装配懒激活策略）、ServiceSlot 热替换、文件监控热重载、quiescence/drain 在途计数、插件猝死观测。
 - **单线程核心**：激活/卸载/派发都在一个 Executor 上；`Executor` 是留给将来的接缝（`Host::set_executor` / `Context::executor`），核心自身目前同步执行、不投递。跨线程投递要你自己实现加锁的 Executor；`SafeExecutor` 不是它 —— 它只给任务加**失败隔离**（任务抛异常时报告给 sink，而不是把泵打崩），见 `executor.hpp`。
 - **不含业务设施**：没有 UI、没有网络、没有日志实现 —— 只有一条 `LogSink` 接缝（`HostCore::set_log_sink`）。
 - **插件能力有边界**：插件只能提供 published 表（原生 C++ 服务跨不了 ABI）；插件不是 `Host` 组件，因此没有编译期 Requires/Provides 检查，也不会自动重激活。
@@ -142,6 +144,7 @@ struct MyPlugin {
     void deactivate() noexcept {}
 };
 NOSTOS_PLUGIN(MyPlugin)
+```
 
 
 ## 许可

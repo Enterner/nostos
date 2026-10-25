@@ -75,13 +75,6 @@ void init_table(T& table, std::uint32_t abi_version = 1) noexcept {
     table.header.abi_version = abi_version;
 }
 
-// 发布方侧：表只有盖章之后才可发布。
-template <Table T>
-bool table_is_valid(const T& table) noexcept {
-    return table.header.struct_size >= sizeof(TableHeader) &&
-           table.header.abi_version != 0;
-}
-
 // 裸的（已解析的）表指针 -> 带类型的表；发布方的修订无法满足本消费方时返回
 // nullptr。两道独立的门：发布方必须至少填满 sizeof(T)（struct_size——真正
 // 防止读到发布方 struct 末尾之外的是这道门），并且必须声明至少 min_version。

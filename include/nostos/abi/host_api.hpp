@@ -155,7 +155,11 @@ public:
             if (drop != nullptr)
                 for (auto& task : dropped) {
                     const HostBridge::Guard guard{*this};
-                    drop(task.second);  // 约定：fn 不抛（宿主侧再兜底一层）
+                    try {
+                        drop(task.second);  // 约定：fn 不抛；抛了也吞掉——收尾路径
+                    } catch (...) {         // 不许 terminate，与 drain_posted 同口径
+                        log_swallowed("a poster drop callback threw");
+                    }
                 }
         }
         session_posters_.resize(poster_from);
@@ -214,7 +218,7 @@ public:
     }
 
     // 表槽位（static）：解析 TLS 上的当前桥并交给你 acquire_poster。
-    // 只在 activate 期间（桥在 TLS 上）才会成功。
+    // 只在 activate 期间（桥在 TLS 上且会话已开）才会成功。
     static nostos_status acquire_poster_thunk(struct nostos_poster* out) noexcept {
         HostBridge* bridge = HostBridge::current();
         if (bridge == nullptr) return NOSTOS_ERR_BAD_STATE;
@@ -238,9 +242,14 @@ public:
         wake_arg_.store(arg, std::memory_order_release);
     }
 
-    // activate 期间领取（此时本桥在 TLS 上）。同一会话内幂等。
+    // activate 期间领取（此时本桥在 TLS 上、会话已开）。同一会话内幂等。
+    // NOTE: 与 publish 同一纪律：会话外调用返回 BAD_STATE。宿主只撤销会话内交出
+    // 的东西——会话外（如排水任务体内）领取的 poster 进不了任何会话标记，会被
+    // 下一次最外层会话收尾按基准 0 误伤；在这里拒绝，而不是让调用方拿到一个
+    // 归属含糊的 poster。
     nostos_status acquire_poster(struct nostos_poster* out) {
         if (out == nullptr) return NOSTOS_ERR_INVALID_ARG;
+        if (!in_session()) return NOSTOS_ERR_BAD_STATE;
         posters_.emplace_back();
         PosterState& ps = posters_.back();
         ps.bridge = this;

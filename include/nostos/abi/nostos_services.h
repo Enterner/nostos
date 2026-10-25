@@ -1,6 +1,7 @@
 /* nostos/abi/nostos_services.h —— 知名服务表的 C 布局（Tier 0 冻结面）。
  *
- * 这里的每张表由 nostos-kit（Tier 1）供货，svc 名以 "nostos." 前缀保留给第一方。
+ * 这里只给出表的 C 布局契约，svc 名以 "nostos." 前缀保留给第一方；实例由宿主侧
+ * 包装发布（例如把 kit::Log 接成 nostos.log.v1）——内核与 kit 当前不含适配代码。
  * 布局走同样的纪律：字段只在尾部追加，读者按 struct_size 门控
  * （NOSTOS_PLUGIN_HAS / NOSTOS_HOST_HAS 的同款机制）。
  */

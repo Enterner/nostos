@@ -5,7 +5,8 @@
 // 零第三方依赖。
 //
 // 与宿主的关系：sink 是普通回调——宿主把 sink 接到自己的日志出口，kit 不依赖任何宿主概念。
-// ABI 插件：经 abi/nostos_services.h 的 nostos_log_v1 表取用。
+// ABI 插件：可经 abi/nostos_services.h 的 nostos_log_v1 表取用（那里只给 C 布局
+// 契约；宿主负责把本类包装成表发布，kit 当前不含适配代码）。
 
 #include <atomic>
 #include <condition_variable>

@@ -17,13 +17,11 @@
 #
 # 想加一个插件：复制一个插件目录（CMakeLists + CMakePresets 都有了），改名字即可。
 
-# 宿主契约头（app/contract.hpp）与"参考宿主"的位置。演示插件实现的是宿主的契约，所以默认
-# 指向仓库根下的 app/；插件若想自带宿主（一体编译），也用这两个变量找宿主源码。
-# 不实现宿主契约的插件（例如纯测试替身）用不到它们。
-# 注意（外部产品仓必读）：这里指向的是内核**自带示例宿主**的契约（demo 契约）。你的宿主
-# 契约头在自己的仓库里——请自行 target_include_directories 指过去，不要 include 这里的
-# app/contract.hpp，否则拿到的是演示契约而不是你的产品契约。
-set(NOSTOS_APP_DIR "${NOSTOS_ROOT}/app" CACHE PATH "参考宿主目录（contract.hpp 与 main.cpp）")
+# 宿主契约头的位置（可选）。实现宿主契约的插件要 include 宿主的 contract.hpp——
+# 那份头属于**你的宿主工程**，不在本内核仓：把 NOSTOS_APP_DIR 改指宿主源码目录，
+# 或完全自行 target_include_directories。不实现宿主契约的插件（例如纯测试替身）
+# 用不到它——默认值指向的路径在本仓不存在，include 它会直接暴露配置错误。
+set(NOSTOS_APP_DIR "${NOSTOS_ROOT}/app" CACHE PATH "宿主源码目录（contract.hpp 所在）")
 
 # 模块产物一律落在**本工程自己的构建树**里（各自的编译在各自目录）：
 #     plugin/<名字>/build-<preset>/<config>/<名字>.dll
@@ -48,9 +46,9 @@ function(nostos_plugin_module name)
 
     nostos_plugin_artifact_dir(${name})
 
-    if(MSVC)
-        target_compile_options(${name} PRIVATE /permissive- /EHsc /utf-8)
-    else()
+    # /permissive- /EHsc /utf-8（含 ASan 传播）均由 nostos::core 的 INTERFACE 选项
+    # 带入，不在此重复；非 MSVC 补告警级别。
+    if(NOT MSVC)
         target_compile_options(${name} PRIVATE -Wall -Wextra)
     endif()
     nostos_copy_asan_runtime(${name})

@@ -366,7 +366,6 @@ struct Server::Impl {
                     respond(client, Response::status_page(413, "请求过大"));
                     return;
                 }
-                if (client.request_done) continue;  // 已经回应过，剩下的字节丢掉
                 continue;
             }
             if (got == 0) {  // 对端关闭
@@ -454,10 +453,10 @@ struct Server::Impl {
             }
         }
         client.last_progress = std::chrono::steady_clock::now();
+        // flush 的排空路径内部已调 maybe_finish；提前返回（半途/断开）时
+        // maybe_finish 也无事可做，不再补一次。
         flush(client);
-        maybe_finish(client);
     }
-
     void flush(Client& client) {
         while (!client.out.empty()) {
             const std::size_t want = client.out.size() > 64 * 1024 ? 64 * 1024 : client.out.size();
@@ -498,15 +497,14 @@ struct Server::Impl {
     // 清掉已关闭的连接 + 丢弃"完全没进展"的连接（对端拔网线/假死时不让它占着槽位）。
     void reap() {
         const auto now = std::chrono::steady_clock::now();
-        clients_.erase(std::remove_if(clients_.begin(), clients_.end(),
-                                      [&](Client& client) { return client.fd == kInvalidSocket; }),
-                       clients_.end());
         for (auto& client : clients_) {
+            if (client.fd == kInvalidSocket) continue;  // 本轮已关：不算停滞，只待清
             if (client.sse) continue;  // SSE 长连接空闲是常态：两次事件之间本就无数据，
                                        // 不受停滞回收（踩过: 插件侧 webui——SSE 空闲 15s 被掐断，页面实时通道周期性死亡）。
-            if (now - client.last_progress <= options_.stall_timeout) continue;
-            stalled_dropped_.fetch_add(1);
-            close_client(client);
+            if (now - client.last_progress > options_.stall_timeout) {
+                stalled_dropped_.fetch_add(1);
+                close_client(client);
+            }
         }
         clients_.erase(std::remove_if(clients_.begin(), clients_.end(),
                                       [&](Client& client) { return client.fd == kInvalidSocket; }),

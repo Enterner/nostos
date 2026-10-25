@@ -141,7 +141,8 @@ typedef struct nostos_host_api {
     void (*emit)(uint64_t evt_id, const void* payload);
 
     /* 取用绑定到调用方激活会话的投递器（poster）。在 activate 期间调用
-     * （此时调用方的桥已安装）；用 NOSTOS_HOST_HAS(host, acquire_poster)
+     * （此时调用方的桥已安装、会话已开；会话外调用返回 NOSTOS_ERR_BAD_STATE，
+     * 与 publish 同一纪律）；用 NOSTOS_HOST_HAS(host, acquire_poster)
      * 门控。见上文 nostos_poster。out 为空返回 NOSTOS_ERR_INVALID_ARG，
      * 分配失败返回 NOSTOS_ERR_FAILED。 */
     nostos_status (*acquire_poster)(struct nostos_poster* out);

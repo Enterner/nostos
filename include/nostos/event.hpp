@@ -302,11 +302,8 @@ public:
         if (!fn) return 0;
         const std::uint32_t token = next_raw_token_++;
         auto control = std::make_shared<detail::SubControl>();
-        if (slot == 0)
-            raw_[evt_id].slots.push_back(RawSlot{token, std::move(fn), std::move(control)});
-        else
-            slot_raw_[{evt_id, slot}].slots.push_back(
-                RawSlot{token, std::move(fn), std::move(control)});
+        channels_[RawToken{evt_id, slot}].slots.push_back(
+            RawSlot{token, std::move(fn), std::move(control)});
         raw_tokens_.emplace(token, RawToken{evt_id, slot});
         return token;
     }
@@ -317,29 +314,17 @@ public:
         if (t == raw_tokens_.end()) return;
         const RawToken key = t->second;
         raw_tokens_.erase(t);
-        std::vector<RawSlot>* slots = nullptr;
-        if (key.slot == 0) {
-            auto channel = raw_.find(key.evt_id);
-            if (channel == raw_.end()) return;
-            slots = &channel->second.slots;
-        } else {
-            auto channel = slot_raw_.find(key);
-            if (channel == slot_raw_.end()) return;
-            slots = &channel->second.slots;
-        }
-        for (auto it = slots->begin(); it != slots->end(); ++it) {
+        auto channel = channels_.find(key);
+        if (channel == channels_.end()) return;
+        auto& slots = channel->second.slots;
+        for (auto it = slots.begin(); it != slots.end(); ++it) {
             if (it->token == token) {
                 if (it->control) it->control->active = false;
-                slots->erase(it);
+                slots.erase(it);
                 break;
             }
         }
-        if (slots->empty()) {
-            if (key.slot == 0)
-                raw_.erase(key.evt_id);
-            else
-                slot_raw_.erase(key);
-        }
+        if (slots.empty()) channels_.erase(channel);
     }
 
     // 从 C++ 之外抵达的载荷（插件 emit 一个共享头里的 C 结构体）。E 的原生
@@ -365,8 +350,8 @@ public:
             emit_raw(evt_id, payload);
             return;
         }
-        auto it = slot_raw_.find({evt_id, slot});
-        if (it == slot_raw_.end()) return;
+        auto it = channels_.find(RawToken{evt_id, slot});
+        if (it == channels_.end()) return;
         auto snapshot = it->second.slots;  // 重入安全，与 dispatch_raw 同一纪律
         for (auto& s : snapshot) {
             if (s.control->active) s.fn(payload);
@@ -378,29 +363,28 @@ public:
     // 该 id 上存在任何活动：类型化 bus、广播 raw 或任一 slot 通道。与 emit_raw
     // 的返回值不等价——后者只看类型化 bus，raw-only 的 id 在那里是 false。
     bool knows(std::uint64_t evt_id) const noexcept {
-        if (buses_.count(evt_id) != 0 || raw_.count(evt_id) != 0) return true;
-        // slot_raw_ 按 (evt_id, slot) 有序，同一 evt_id 的槽位连续：定位首项即可。
-        auto it = slot_raw_.lower_bound(RawToken{evt_id, 0});
-        return it != slot_raw_.end() && it->first.evt_id == evt_id;
+        if (buses_.count(evt_id) != 0) return true;
+        // channels_ 按 (evt_id, slot) 有序，同一 evt_id 的通道连续：定位首项即可。
+        auto it = channels_.lower_bound(RawToken{evt_id, 0});
+        return it != channels_.end() && it->first.evt_id == evt_id;
     }
 
     // 该 id 上的 raw 订阅总数：广播 + 全部 slot 槽位求和。
     std::size_t raw_listener_count(std::uint64_t evt_id) const noexcept {
         std::size_t count = 0;
-        if (auto it = raw_.find(evt_id); it != raw_.end()) count += it->second.slots.size();
-        for (auto it = slot_raw_.lower_bound(RawToken{evt_id, 0});
-             it != slot_raw_.end() && it->first.evt_id == evt_id; ++it)
+        for (auto it = channels_.lower_bound(RawToken{evt_id, 0});
+             it != channels_.end() && it->first.evt_id == evt_id; ++it)
             count += it->second.slots.size();
         return count;
     }
 
     // raw 通道总数：广播通道 + slot (evt_id, slot) 通道。
-    std::size_t raw_channel_count() const noexcept { return raw_.size() + slot_raw_.size(); }
+    std::size_t raw_channel_count() const noexcept { return channels_.size(); }
 
     // 由 EventBus::notify_raw 调用。
     void dispatch_raw(std::uint64_t evt_id, const void* payload) {
-        auto it = raw_.find(evt_id);
-        if (it == raw_.end()) return;
+        auto it = channels_.find(RawToken{evt_id, 0});
+        if (it == channels_.end()) return;
         auto snapshot = it->second.slots;  // 重入安全
         for (auto& slot : snapshot)
             if (slot.control->active) slot.fn(payload);
@@ -438,7 +422,7 @@ private:
         std::vector<RawSlot> slots;
     };
 
-    // 订阅 token 的落点：slot=0 是广播通道（raw_），slot!=0 是单播通道。
+    // 订阅 token 的落点：slot=0 是广播，slot!=0 是单播。
     struct RawToken {
         std::uint64_t evt_id;
         std::uint64_t slot;
@@ -449,8 +433,9 @@ private:
 
     std::unordered_map<std::uint64_t, std::unique_ptr<detail::BusBase>> buses_;
     std::unordered_map<std::uint64_t, std::function<void(const void*)>> emitters_;
-    std::unordered_map<std::uint64_t, RawChannel> raw_;
-    std::map<RawToken, RawChannel> slot_raw_;
+    // 广播（slot=0）与单播（slot!=0）共用一张通道表：键即落点，token 空间与退订
+    // 路径天然合一；派发互相隔绝的纪律在 on_slot/emit_slot 的注释里。
+    std::map<RawToken, RawChannel> channels_;
     std::unordered_map<std::uint32_t, RawToken> raw_tokens_;
     std::uint32_t next_raw_token_ = 1;
 };

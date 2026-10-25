@@ -104,13 +104,17 @@ public:
     // get_effects() 按登记顺序返回仍然挂牌的 label（"我还剩什么没撤"）。
     // 覆盖范围：只反映本 Scope 的账本——ABI 插件的订阅表在插件自己手里。
 
-    // 登记 ⇒ 立即执行 body；label 的摘除发生在 body 之后
-    // （正常回滚或手工调用返回的 disposer，都是这个顺序）。
+    // 登记 ⇒ teardown 时先摘牌、再执行 body（正常回滚与手工 disposer 都是
+    // 这个顺序）。label 在 lambda 里按值捕获：init-capture 的 move 会当场搬空
+    // 参数，随后的 push_back 就只能登记到空串。摘牌先判 find 不中——同名 label
+    // 已被先拆时 find 返回 end()，erase(end()) 是 UB（踩过: 两个 bug 连环，
+    // effect 登记 teardown 即段错误，get_effects 全是空串）。
     void effect(std::string label, std::function<void()> body) {
         auto labels = live_labels_;
-        defer([labels, label = std::move(label), body = std::move(body)]() mutable {
+        defer([labels, label, body = std::move(body)]() mutable {
             auto& v = *labels;
-            v.erase(std::find(v.begin(), v.end(), label));
+            const auto it = std::find(v.begin(), v.end(), label);
+            if (it != v.end()) v.erase(it);
             body();
         });
         live_labels_->push_back(std::move(label));

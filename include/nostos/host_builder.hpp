@@ -221,10 +221,10 @@ private:
 
     // ---- 编译期检查 ---------------------------------------------
 
+    // Component<C> 由类模板的 requires 子句把守（约束失败时整个类出局，本函数
+    // 根本不实例化）；这里只检查 requires 子句管不到的两条契约。
     template <typename C>
     static void check_component() {
-        static_assert(Component<C>, "nostos: a Host component must be a default-constructible "
-                                    "class with void activate(nostos::Context&)");
         if constexpr (DeclaresOnStop<C>) {
             static_assert(requires(C& c) { { c.onStop() } noexcept; },
                           "nostos: Component::onStop() must be declared noexcept — "

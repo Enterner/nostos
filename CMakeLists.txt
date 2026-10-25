@@ -9,16 +9,18 @@ cmake_minimum_required(VERSION 3.24)
 #   1) 被工作区包含：上层 CMakeLists 里 add_subdirectory(nostos)
 #   2) 独立配置：   cmake -S nostos -B build && cmake --install build --prefix <prefix>
 
+# 版本的唯一字面量。独立配置时 project() 会把同名变量再设一遍；被 add_subdirectory
+# 时 project() 不执行，这行保证 nostos_VERSION 仍有值（安装版本文件要用）。
+set(nostos_VERSION 0.1.0)
+
 # 独立配置时才自建 project（被 add_subdirectory 时沿用上层的工作区项目）。
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
-    project(nostos VERSION 0.1.0 LANGUAGES C CXX)
+    project(nostos VERSION ${nostos_VERSION} LANGUAGES C CXX)
     set(CMAKE_CXX_STANDARD 20)
     set(CMAKE_CXX_STANDARD_REQUIRED ON)
     set(CMAKE_CXX_EXTENSIONS OFF)
     set(CMAKE_C_STANDARD 11)
 endif()
-
-set(nostos_VERSION 0.1.0)
 
 # ---- 核心：header-only，零依赖 ----------------------------------------------
 
@@ -38,7 +40,10 @@ if(MSVC)
     #                nostos 的全部契约是"异常 ⇒ scope unwind、副作用回滚"，
     #                不开 /EHsc 的构建会静默破坏本库（Debug /Od 碰巧能跑，
     #                Release 不行）。
-    target_compile_options(nostos INTERFACE /permissive- /EHsc)
+    # /utf-8       ：源码是 BOM-less UTF-8 的中文注释；MSVC 默认按系统 ACP 解读，
+    #                注释尾字节撞上 0x5C（\）会吞掉下一行。挂 INTERFACE 让所有
+    #                消费者与 loader/kit_http 的编译都免疫。
+    target_compile_options(nostos INTERFACE /permissive- /EHsc /utf-8)
 endif()
 
 # ---- 消毒器 ------------------------------------------------------------------
@@ -114,21 +119,17 @@ install(FILES
 # ---- kit（Tier 1 能力层）----------------------------------------------------
 #
 # 头随 core 分发（include/nostos/kit/）；config 的 JSON 层使用 vendored
-# nlohmann/json（third_party/nlohmann/json.hpp，3.11.3，版本钉死）。
-# 消费方：target_link_libraries(x PRIVATE nostos::kit) 拿到全部 include 目录。
+# nlohmann/json（include/nostos/nlohmann/json.hpp，3.11.3，版本钉死）。
+# vendored 库装在 nostos/ 名字空间之下而不是顶层 include/：消费者自带另一版本的
+# nlohmann 时互不顶替（顶层同名头是典型 ODR 冲突源）。include/nostos 的整目录
+# install 已把它带上，无需单独安装规则。
+# 消费方：target_link_libraries(x PRIVATE nostos::kit)。
 
 add_library(nostos_kit INTERFACE)
-get_filename_component(NOSTOS_THIRD_PARTY_DIR
-    "${CMAKE_CURRENT_SOURCE_DIR}/third_party" ABSOLUTE)
-target_include_directories(nostos_kit INTERFACE
-    $<BUILD_INTERFACE:${NOSTOS_THIRD_PARTY_DIR}>
-    $<INSTALL_INTERFACE:include>)
 target_link_libraries(nostos_kit INTERFACE nostos)
 add_library(nostos::kit ALIAS nostos_kit)
 
 install(TARGETS nostos_kit EXPORT nostosTargets)
-install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/nlohmann/json.hpp"
-    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/nlohmann)
 
 # ---- kit_http（Tier 1 唯一的编译型组件：平台 socket 代码）--------------------
 #

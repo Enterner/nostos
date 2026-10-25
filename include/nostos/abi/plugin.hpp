@@ -64,6 +64,11 @@ namespace nostos::abi {
 
 // plugin 眼中的宿主：把冻结的表包上一层，使缺失或过旧的能力成为编译期可知
 // 的分支，而不是一次错误的调用。
+//
+// NOTE: 能力门控只做一层——v1 字段用 valid()，尾部追加字段用 NOSTOS_HOST_HAS。
+// ABI 契约保证 struct_size 覆盖到的字段都已填充（nostos_abi.h 纪律 4），对函数
+// 指针的二次判空是在怀疑一个契约不存在的状态；两套门控混用只会让读者猜哪层
+// 才算数。
 class Host {
 public:
     Host() noexcept = default;
@@ -87,11 +92,13 @@ public:
     template <Table T>
     const T* service(std::uint64_t svc_id, std::uint32_t min_version = 1) const noexcept {
         if (!valid()) return nullptr;
-        return query<T>(api_, svc_id, min_version);
+        // valid() 已门控过宿主表本身；这里只做表修订门控，不走 query()——那是
+        // 给裸 host 指针用的一站式入口，会重复 valid 的检查。
+        return as_table<T>(api_->service(svc_id), min_version);
     }
 
     const void* service(std::uint64_t svc_id) const noexcept {
-        return valid() && api_->service != nullptr ? api_->service(svc_id) : nullptr;
+        return valid() ? api_->service(svc_id) : nullptr;
     }
 
     // 发布本 plugin 自己的表。所有权留在 plugin 手中；即便 plugin 忘了，
@@ -103,12 +110,12 @@ public:
     // 察觉。plugin 对象本身由 loader 恰好在会话期间持有，这正是成员表成为
     // 常规形态的原因。
     nostos_status publish(std::uint64_t svc_id, const void* table) const noexcept {
-        if (!can_publish() || api_->publish == nullptr) return NOSTOS_ERR_BAD_STATE;
+        if (!can_publish()) return NOSTOS_ERR_BAD_STATE;
         return api_->publish(svc_id, table);
     }
 
     void unpublish(std::uint64_t svc_id) const noexcept {
-        if (can_publish() && api_->unpublish != nullptr) api_->unpublish(svc_id);
+        if (can_publish()) api_->unpublish(svc_id);
     }
 
     // ---- 投递器 -------------------------------------------------------------
@@ -118,8 +125,7 @@ public:
     // NOSTOS_ERR_BAD_STATE——与 publish() 对缺失能力用同一约定——于是调用方
     // 统一按“没有投递器”处理，不必手工探查 struct 大小。
     nostos_status acquire_poster(struct nostos_poster* out) const noexcept {
-        if (!valid() || !NOSTOS_HOST_HAS(api_, acquire_poster) || api_->acquire_poster == nullptr)
-            return NOSTOS_ERR_BAD_STATE;
+        if (!NOSTOS_HOST_HAS(api_, acquire_poster)) return NOSTOS_ERR_BAD_STATE;
         return api_->acquire_poster(out);
     }
 
@@ -127,7 +133,7 @@ public:
 
     // 宿主实现了枚举槽位时为 true（尾部追加的槽位，旧宿主没有）。
     bool can_published_list() const noexcept {
-        return valid() && NOSTOS_HOST_HAS(api_, published_list) && api_->published_list != nullptr;
+        return NOSTOS_HOST_HAS(api_, published_list);
     }
 
     // 枚举宿主当前 published 的服务：最多写 cap 个条目（注册序），返回写入数；
@@ -143,6 +149,9 @@ public:
     // ---- 事件 ---------------------------------------------------------------
 
     // 拥有自己的可调用对象的订阅：销毁它即退订。
+    // NOTE: 与 host 侧 nostos::Subscription（event.hpp，控制块+unlink 形态）同名
+    // 不同物——本类由 token + keep_alive 构成，生命周期归插件；两者分属 ABI 两侧，
+    // 不会相遇。
     class Subscription {
     public:
         Subscription() noexcept = default;
@@ -171,7 +180,7 @@ public:
         ~Subscription() { unsubscribe(); }
 
         void unsubscribe() noexcept {
-            if (token_ != 0 && api_ != nullptr && api_->off != nullptr) api_->off(token_);
+            if (token_ != 0 && api_ != nullptr) api_->off(token_);  // off 是 v1 字段
             token_ = 0;
             keep_alive_.reset();
         }
@@ -189,7 +198,7 @@ public:
     // 一律拷贝。
     template <typename F>
     Subscription on(std::uint64_t evt_id, F fn) const {
-        if (!valid() || api_ == nullptr || api_->on == nullptr) return {};
+        if (!valid()) return {};
         auto callable = std::make_shared<F>(std::move(fn));
         const std::uint32_t token = api_->on(evt_id, &trampoline<F>, callable.get());
         if (token == 0) return {};
@@ -202,9 +211,7 @@ public:
     // 析构/unsubscribe() 统一退订。
     template <typename F>
     Subscription on_slot(std::uint64_t evt_id, std::uint64_t slot, F fn) const {
-        if (!valid() || api_ == nullptr || !NOSTOS_HOST_HAS(api_, on_slot) ||
-            api_->on_slot == nullptr)
-            return {};
+        if (!NOSTOS_HOST_HAS(api_, on_slot)) return {};
         auto callable = std::make_shared<F>(std::move(fn));
         const std::uint32_t token = api_->on_slot(evt_id, slot, &trampoline<F>, callable.get());
         if (token == 0) return {};
@@ -214,21 +221,20 @@ public:
     // 向宿主引发一个事件：原生监听者把该 struct 看作其 C++ 类型。在没有这些
     // 追加字段的宿主上不可用。
     void emit(std::uint64_t evt_id, const void* payload) const noexcept {
-        if (can_emit() && api_->emit != nullptr) api_->emit(evt_id, payload);
+        if (can_emit()) api_->emit(evt_id, payload);
     }
 
     // 按 slot 引发（尾部追加的槽位；旧宿主上为空操作）。slot=0 与 emit()
     // 完全等价；slot!=0 是独立于广播的单播通道——只有该 (evt_id, slot) 的
     // 显式 on_slot 订阅者收得到。slot 只做路由键，业务数据一律走 payload。
     void emit_slot(std::uint64_t evt_id, std::uint64_t slot, const void* payload) const noexcept {
-        if (api_ != nullptr && NOSTOS_HOST_HAS(api_, emit_slot) && api_->emit_slot != nullptr)
-            api_->emit_slot(evt_id, slot, payload);
+        if (NOSTOS_HOST_HAS(api_, emit_slot)) api_->emit_slot(evt_id, slot, payload);
     }
 
     // ---- 日志 ---------------------------------------------------------------
 
     void log(int level, const char* msg) const noexcept {
-        if (valid() && api_->log != nullptr) api_->log(level, msg);
+        if (valid()) api_->log(level, msg);
     }
     void log(int level, std::string_view msg) const noexcept {
         // 宿主只承诺调用期有效，所以交给它一份以 NUL 结尾的拷贝，让这条契约

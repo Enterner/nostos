@@ -3,12 +3,12 @@
 //   内置默认 ← nostos.json ← 环境变量 ← 运行时覆盖
 // + on_change 订阅（解析值变化才触发，回调在调用线程同步执行）。
 //
-// JSON 层使用 vendored nlohmann/json（Tier 1 首个准入，3.11.3，版本钉死）；
-// 只在 load_file 一处使用——其余部分零依赖。
+// JSON 层使用 vendored nlohmann/json（include/nostos/nlohmann/，Tier 1 首个
+// 准入，3.11.3，版本钉死）；只在 load_file 一处使用——其余部分零依赖。
 //
 // 环境层的变更无通知机制（getenv 无回调）：该层的变更不触发 on_change。
 
-#include <nlohmann/json.hpp>
+#include <nostos/nlohmann/json.hpp>
 
 #include <algorithm>
 #include <cctype>
@@ -181,8 +181,7 @@ private:
         }
         if (node.is_string()) (*out)[prefix] = node.get<std::string>();
         else if (node.is_boolean()) (*out)[prefix] = node.get<bool>() ? "true" : "false";
-        else if (node.is_number()) (*out)[prefix] = node.dump();
-        else (*out)[prefix] = node.dump();  // 数组等复杂值按 JSON 文本存放
+        else (*out)[prefix] = node.dump();  // 数字、数组等一律落成 JSON 文本
     }
 
     mutable std::mutex mu_;

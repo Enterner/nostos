@@ -1,5 +1,6 @@
 #pragma once
-// nostos L2 —— published 服务：服务系统中跨越动态 plugin 边界的那一半。
+// nostos L1 —— published 服务：服务系统中跨越动态 plugin 边界的那一半
+// （注册表本体是纯 C++ 容器；它持有的表是 L2 ABI 边界的载体）。
 //
 // 刻意分成两层：
 //   * native 服务（registry.hpp）是以 svc_id 为键的 C++ 对象——快、带类型，

@@ -26,15 +26,8 @@
 #include <utility>
 
 #if defined(_WIN32)
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-
-#include "nostos/kit/win.hpp"  // utf8_to_wide
+// win.hpp 先行：由它引入 <windows.h>（LEAN_AND_MEAN/NOMINMAX 只在那一处定义）。
+#include "nostos/kit/win.hpp"
 #endif
 
 namespace nostos::kit {

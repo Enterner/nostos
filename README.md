@@ -71,6 +71,7 @@ target_link_libraries(my_host PRIVATE nostos::core nostos::loader)
 | `kit/scratch.hpp` | header-only | 同步 emit 的载荷稳定缓冲：`Scratch::hold(string)→const char*`，作用域即寿命，地址跨后续 hold 稳定（事件载荷"调用期有效"纪律的调用点表达） |
 | `kit/http.hpp` | `nostos::kit_http` | 单线程 select 循环 HTTP/1.1 + SSE：每客户端有界缓冲做背压，慢客户端不可能拖住别人 |
 | `kit/win.hpp` | header-only | UTF-8 ↔ 宽字符转换（非 Windows 平台恒返回空） |
+| `kit/win_http.hpp` | header-only | 一发 HTTP 请求 `http_fetch`（探测/拉清单形态：状态码 + 整读 body 封顶，固定 NO_PROXY 直连；非 Windows 恒 sent=false）。调用方需链 winhttp.lib |
 | `kit/process.hpp` | header-only | 子进程生命周期（Windows） |
 | `kit/piped_process.hpp` | header-only | 管道化子进程：stdout/stderr 捕获 + stdin 可选管道化 + 环境块覆盖合并 + Job Object 进程树终止（Windows；非 Windows start 恒 false） |
 | `kit/poster.hpp` | header-only | poster 投递助手：`poster_submit`（闭包打包成堆块，post 失败/会话作废两路都回收）与 `poster_submit_await`（同步投递、阻塞等完成） |

@@ -69,7 +69,7 @@ target_link_libraries(my_host PRIVATE nostos::core nostos::loader)
 | `kit/timer.hpp` | header-only | every / after / throttle / debounce，回调经 dispatch 投回宿主线程 |
 | `kit/task.hpp` | header-only | 后台任务：block（join）/ discard（安全逃逸）两种关停语义 + 并发上限 |
 | `kit/scratch.hpp` | header-only | 同步 emit 的载荷稳定缓冲：`Scratch::hold(string)→const char*`，作用域即寿命，地址跨后续 hold 稳定（事件载荷"调用期有效"纪律的调用点表达） |
-| `kit/http.hpp` | `nostos::kit_http` | 单线程 select 循环 HTTP/1.1 + SSE：每客户端有界缓冲做背压，慢客户端不可能拖住别人 |
+| `kit/http.hpp` | `nostos::kit_http` | 单线程 select 循环 HTTP/1.1 + SSE：每客户端有界缓冲做背压，慢客户端不可能拖住别人；挂起-补响应（handler 返回 suspended 后连接保持，真响应经 `Server::respond(conn_id)` 任意线程补发，重活可离开 select 线程） |
 | `kit/win.hpp` | header-only | UTF-8 ↔ 宽字符转换（非 Windows 平台恒返回空） |
 | `kit/win_http.hpp` | header-only | 一发 HTTP 请求 `http_fetch`（探测/拉清单形态：状态码 + 整读 body 封顶，固定 NO_PROXY 直连；非 Windows 恒 sent=false）。调用方需链 winhttp.lib |
 | `kit/process.hpp` | header-only | 子进程生命周期（Windows） |

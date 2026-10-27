@@ -34,6 +34,10 @@ struct Request {
     std::vector<Header> headers;
     std::string body;
 
+    // 连接寻址（挂起-补响应）：handler 返回挂起响应后，真响应经
+    // Server::respond(conn_id, resp) 补发。同步响应不读此值。
+    std::uint64_t conn_id = 0;
+
     // 大小写无关地取一个头；没有返回空串。
     std::string header(std::string_view name) const;
 };
@@ -57,11 +61,20 @@ struct Response {
     // 每条消息以 "data: <text>\n\n" 推给所有 SSE 连接。body/file_* 被忽略。
     bool sse_stream = false;
 
+    // 挂起-补响应：true ⇒ 连接保持、本轮不发送任何字节；真响应（含状态与头）
+    // 稍后经 Server::respond(request.conn_id, resp) 从任意线程补发。与 sse_stream
+    // 互斥（同为"连接保持"形态，不叠加）；挂起期间连接不受 stall_timeout 约束。
+    // 重活从此离开 select 线程：handler 只留参数解析与投递（poster），消费方
+    // 数据面锁与连接表锁的锁序因此单向化，跨线程 ABBA 无从构成。
+    bool suspended = false;
+
     static Response text(int status, std::string content_type, std::string body);
     static Response status_page(int status, std::string_view note);
 };
 
 // 服务器把请求交给它。**在 select 线程上同步调用**，因此必须快（不许阻塞、不许 sleep）。
+// 逃逸口：重活经 poster 投递到别的线程并返回 suspended 响应（见 Response::suspended），
+// select 线程上只留参数解析与投递；真响应稍后经 Server::respond 补发。
 class Handler {
 public:
     virtual ~Handler() = default;
@@ -122,6 +135,13 @@ public:
     // 慢客户端（待发缓冲达到 buffer_cap）跳过本条并计入 stalled_dropped——
     // 单个读不动的浏览器不能拖住别人，这与整个服务器的背压设计一致。
     void broadcast(std::string_view text);
+
+    // 补发一个挂起响应（任意线程）：按 conn_id 寻址连接并发送完整响应。连接已
+    // 断开/不存在/未处于挂起态 ⇒ 静默丢弃（客户端关页是常态路径，非错误）。
+    // 这是 handler 返回 suspended 的另一半契约——挂起连接唯一能出响应的出口。
+    // 补发路径只拿连接表锁：挂起模型下补发方此前已做完消费方数据面操作、不持
+    // 任何插件侧锁，与 select 线程的快进快出 handler 构成单向锁序。
+    void respond(std::uint64_t conn_id, const Response& response);
 
     ServerStats stats() const noexcept;
 

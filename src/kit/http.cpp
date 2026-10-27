@@ -185,6 +185,8 @@ static thread_local int g_handler_depth = 0;
 struct Server::Impl {
     struct Client {
         socket_t fd = kInvalidSocket;
+        std::uint64_t id = 0;                // 连接寻址（挂起-补响应）；0 不用，从 1 起派
+        bool suspended = false;              // handler 返回挂起响应：连接保持，等补发
         std::string in;
         std::string out;                     // 待发字节（头 + 体 + 文件块），上限 buffer_cap
         std::unique_ptr<std::ifstream> file; // 每个客户端自己的句柄 ⇒ 无共享 seek 状态
@@ -335,6 +337,7 @@ struct Server::Impl {
             }
             set_non_blocking(fd);
             Client client;
+            client.id = next_conn_id_++;
             client.fd = fd;
             client.last_progress = std::chrono::steady_clock::now();
             clients_.push_back(std::move(client));
@@ -404,15 +407,20 @@ struct Server::Impl {
         dispatch(client, request);
     }
 
-    void dispatch(Client& client, const Request& request) {
+    void dispatch(Client& client, Request& request) {
         Response response;
         ++g_handler_depth;
+        request.conn_id = client.id;
         try {
             response = handler_->handle(request);
         } catch (...) {
             response = Response::status_page(500, "处理请求时抛出异常");
         }
         --g_handler_depth;
+        if (response.suspended) {  // 挂起-补响应：连接保持，真响应稍后经 Server::respond 到
+            client.suspended = true;
+            return;
+        }
 
         // 并发流上限在这里统一兜住：handler 不需要（也不该）自己数。
         if (!response.file_path.empty() && !response.head_only) {
@@ -509,6 +517,7 @@ struct Server::Impl {
             if (client.fd == kInvalidSocket) continue;  // 本轮已关：不算停滞，只待清
             if (client.sse) continue;  // SSE 长连接空闲是常态：两次事件之间本就无数据，
                                        // 不受停滞回收（踩过: 插件侧 webui——SSE 空闲 15s 被掐断，页面实时通道周期性死亡）。
+            if (client.suspended) continue;  // 挂起等补发：无进展是常态（宿主线程在算），不受停滞回收
             if (now - client.last_progress > options_.stall_timeout) {
                 stalled_dropped_.fetch_add(1);
                 close_client(client);
@@ -540,12 +549,26 @@ struct Server::Impl {
         }
     }
 
+    // 挂起-补响应的补发口：按连接 id 定位并发送完整响应。连接已断/不存在/未
+    // 挂起 ⇒ 静默丢弃（客户端关页是常态路径，非错误）。持连接表锁发送——补发
+    // 方（宿主侧）此刻不持任何插件侧数据锁（挂起模型的契约），锁序单向。
+    void respond_conn(std::uint64_t conn_id, const Response& response) {
+        std::lock_guard<std::mutex> lock(clients_mu_);
+        for (auto& client : clients_) {
+            if (client.id != conn_id || !client.suspended) continue;
+            client.suspended = false;
+            respond(client, response);
+            return;
+        }
+    }
+
     Handler* handler_;
     ServerOptions options_;
     SocketRuntime runtime_;
     std::mutex clients_mu_;  // 守护 clients_ 与各 client 的 out/fd（循环线程 vs broadcast/stop）
     socket_t listener_ = kInvalidSocket;
     std::uint16_t port_ = 0;
+    std::uint64_t next_conn_id_ = 1;
     std::thread thread_;
     std::vector<Client> clients_;
 
@@ -574,6 +597,10 @@ void Server::stop() noexcept {
 
 void Server::broadcast(std::string_view text) {
     if (impl_) impl_->broadcast(text);
+}
+
+void Server::respond(std::uint64_t conn_id, const Response& response) {
+    if (impl_) impl_->respond_conn(conn_id, response);
 }
 
 ServerStats Server::stats() const noexcept {

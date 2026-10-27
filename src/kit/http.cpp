@@ -176,6 +176,12 @@ Response Response::status_page(int status, std::string_view note) {
 
 // ---- 实现 -------------------------------------------------------------------
 
+// 同线程重入闸门：标记"线程正处在任一 http handler 派发中"。select 循环持
+// clients_mu_ 同步调 handler（dispatch），此间回调链再进 broadcast() 就是同一把
+// 非递归锁二次进入 = 整服务无声挂死——闸门命中即丢弃并计数。只防同线程形态；
+// 跨线程"先拿自己的数据锁再 broadcast"的锁序仍由消费方纪律维持。
+static thread_local int g_handler_depth = 0;
+
 struct Server::Impl {
     struct Client {
         socket_t fd = kInvalidSocket;
@@ -400,11 +406,13 @@ struct Server::Impl {
 
     void dispatch(Client& client, const Request& request) {
         Response response;
+        ++g_handler_depth;
         try {
             response = handler_->handle(request);
         } catch (...) {
             response = Response::status_page(500, "处理请求时抛出异常");
         }
+        --g_handler_depth;
 
         // 并发流上限在这里统一兜住：handler 不需要（也不该）自己数。
         if (!response.file_path.empty() && !response.head_only) {
@@ -514,6 +522,10 @@ struct Server::Impl {
 
     // UI/宿主线程调用：给所有 SSE 连接追加一帧。慢客户端跳过（不阻塞广播方）。
     void broadcast(std::string_view text) {
+        if (g_handler_depth != 0) {  // 派发中线程重入 ⇒ 丢弃（挂死形态见闸门注释）
+            reentrant_broadcasts_.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
         std::string frame = "data: ";
         frame.append(text);
         frame += "\n\n";
@@ -543,6 +555,7 @@ struct Server::Impl {
     std::atomic<std::uint64_t> stalled_dropped_{0};
     std::atomic<std::uint64_t> rejected_{0};
     std::atomic<std::uint64_t> bad_requests_{0};
+    std::atomic<std::uint64_t> reentrant_broadcasts_{0};
     std::atomic<std::size_t> active_streams_{0};
     std::atomic<std::size_t> active_clients_{0};
 };
@@ -571,6 +584,7 @@ ServerStats Server::stats() const noexcept {
     stats.stalled_dropped = impl_->stalled_dropped_.load();
     stats.rejected = impl_->rejected_.load();
     stats.bad_requests = impl_->bad_requests_.load();
+    stats.reentrant_broadcasts = impl_->reentrant_broadcasts_.load();
     stats.active_clients = impl_->active_clients_.load();
     stats.active_streams = impl_->active_streams_.load();
     return stats;

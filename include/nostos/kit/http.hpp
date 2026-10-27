@@ -94,6 +94,10 @@ struct ServerStats {
     std::uint64_t stalled_dropped = 0;
     std::uint64_t rejected = 0;      // 超出 max_clients / max_streams
     std::uint64_t bad_requests = 0;  // 解析失败 / 请求过大
+    // handler 在 select 线程持 clients_mu_ 同步执行，其回调链里的 broadcast 属同
+    // 线程非递归锁二次进入，闸门直接丢弃并计数——正常恒 0，非 0 即 handler 回调
+    // 链里有广播（跨线程锁序问题闸门不管，由消费方锁序纪律维持）。
+    std::uint64_t reentrant_broadcasts = 0;
     std::size_t active_clients = 0;
     std::size_t active_streams = 0;
 };

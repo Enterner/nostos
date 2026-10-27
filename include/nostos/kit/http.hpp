@@ -78,7 +78,11 @@ struct ServerOptions {
     std::size_t max_streams = 8;          // 同时进行的文件流；超出 ⇒ 503
     std::size_t buffer_cap = 256 * 1024;  // 每客户端"待发"上限（背压闸门，内存有界）
     std::size_t chunk = 128 * 1024;       // 文件分块大小
-    std::size_t max_request = 16 * 1024;  // 请求头上限
+    // 单请求累计缓冲上限：头+body 合并计入，recv 每轮追加后即查，超出 ⇒ 413。
+    // 默认给足对话类应用"输入即粘贴"的主通道，仍远小于会话上下文，内存有界
+    // （每客户端 buffer_cap 背压照旧兜底）。
+    // 踩过: 16KB 默认下粘贴 35KB 材料即被拒。
+    std::size_t max_request = 2 * 1024 * 1024;
     std::chrono::milliseconds stall_timeout{15000};       // 完全无进展 ⇒ 丢弃
                                                           // （SSE 长连接豁免：空闲是常态）
     std::chrono::milliseconds poll_interval{200};         // select 超时（也决定 stop 的响应延迟）

@@ -181,7 +181,7 @@ private:
             std::size_t nx = 0;
             const std::uint32_t cp = decode(text, pos, &nx);
             next_seeds.clear();
-            next_seeds.emplace_back(start_, pos + nx);
+            next_seeds.emplace_back(start_, static_cast<std::uint32_t>(pos + nx));
             for (const std::uint32_t nd : cur) {
                 ++steps;
                 if (class_match(nodes_[nd].cls, cp))

@@ -187,6 +187,9 @@ struct Server::Impl {
         socket_t fd = kInvalidSocket;
         std::uint64_t id = 0;                // 连接寻址（挂起-补响应）；0 不用，从 1 起派
         bool suspended = false;              // handler 返回挂起响应：连接保持，等补发
+        bool dead = false;                   // 已判死：fd 的 closesocket 统一在循环线程
+                                             // 本轮开头做（跨线程 closesocket 会与另一线程
+                                             // select 的 fd 快照竞态——挂死形态见 run() 注释）
         std::string in;
         std::string out;                     // 待发字节（头 + 体 + 文件块），上限 buffer_cap
         std::unique_ptr<std::ifstream> file; // 每个客户端自己的句柄 ⇒ 无共享 seek 状态
@@ -278,12 +281,22 @@ struct Server::Impl {
             socket_t max_fd = kInvalidSocket;
             {
                 std::lock_guard<std::mutex> lock(clients_mu_);
+                // 统一关闭点：任何线程判死都只标记不关 fd，closesocket 集中在循环
+                // 线程本轮开头（此刻必不在 select 中）——跨线程关闭与另一线程
+                // select 的 fd 快照竞态（UB，曾致循环线程静默退出挂死全服务）。
+                for (auto& client : clients_) {
+                    if (client.dead && client.fd != kInvalidSocket) {
+                        close_socket(client.fd);
+                        client.fd = kInvalidSocket;
+                    }
+                }
                 FD_ZERO(&readable);
                 FD_ZERO(&writable);
                 max_fd = listener_;
                 listening = listener_ != kInvalidSocket;
                 if (listening) FD_SET(listener_, &readable);
                 for (const auto& client : clients_) {
+                    if (client.fd == kInvalidSocket) continue;   // 本轮开头刚关的
                     FD_SET(client.fd, &readable);
                     if (!client.out.empty()) FD_SET(client.fd, &writable);
                     if (client.fd > max_fd) max_fd = client.fd;
@@ -377,8 +390,10 @@ struct Server::Impl {
                 }
                 continue;
             }
-            if (got == 0) {  // 对端关闭
-                if (!client.request_done) close_client(client);
+            if (got == 0) {  // 对端关闭：连接必死，统一标记（循环开头关闭）。
+                             // SSE 亦然——导航死亡的 SSE 若不关会永久滞留（fd 恒
+                             // 可读 + reap 豁免），既热旋转又占连接表（踩过）
+                close_client(client);
                 return;
             }
             if (would_block()) break;
@@ -474,6 +489,7 @@ struct Server::Impl {
         flush(client);
     }
     void flush(Client& client) {
+        if (client.dead) return;   // 已判死：fd 待循环线程关闭，不再触碰
         while (!client.out.empty()) {
             const std::size_t want = client.out.size() > 64 * 1024 ? 64 * 1024 : client.out.size();
             const int sent = ::send(client.fd, client.out.data(), static_cast<int>(want), 0);
@@ -500,10 +516,11 @@ struct Server::Impl {
         close_client(client);
     }
 
+    // 任何线程可调：只标记 dead，fd 的 closesocket 统一由循环线程在下一轮开头做
+    //（跨线程 closesocket 与 select 的 fd 快照竞态 = UB——循环线程曾因此静默退出）
     void close_client(Client& client) {
-        if (client.fd == kInvalidSocket) return;
-        close_socket(client.fd);
-        client.fd = kInvalidSocket;
+        if (client.dead) return;
+        client.dead = true;
         if (client.is_stream) {
             active_streams_.fetch_sub(1);
             client.is_stream = false;
@@ -540,7 +557,7 @@ struct Server::Impl {
         frame += "\n\n";
         std::lock_guard<std::mutex> lock(clients_mu_);
         for (auto& client : clients_) {
-            if (!client.sse || client.fd == kInvalidSocket) continue;
+            if (!client.sse || client.dead || client.fd == kInvalidSocket) continue;
             if (client.out.size() >= options_.buffer_cap) {
                 stalled_dropped_.fetch_add(1);  // 背压闸门：这个浏览器跟不上了
                 continue;
@@ -555,7 +572,7 @@ struct Server::Impl {
     void respond_conn(std::uint64_t conn_id, const Response& response) {
         std::lock_guard<std::mutex> lock(clients_mu_);
         for (auto& client : clients_) {
-            if (client.id != conn_id || !client.suspended) continue;
+            if (client.id != conn_id || !client.suspended || client.dead) continue;
             client.suspended = false;
             respond(client, response);
             return;

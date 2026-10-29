@@ -20,7 +20,6 @@
 
 #include <chrono>
 #include <cstdint>
-#include <cwctype>
 #include <map>
 #include <string>
 #include <utility>
@@ -71,8 +70,8 @@ struct PipedSpawnOptions {
     bool stdin_pipe = false;           // true = 建 stdin 管道（写端归父，经 stdin_write/
                                        // write_stdin/close_stdin）；缺省继承父 stdin
     // 环境块覆盖：键值均 UTF-8。非空时与父环境块按名合并（同名覆盖）后整块传入；
-    // 空 = 原样继承父环境（不构造环境块）。合并块按名排序（不区分大小写）是
-    // CreateProcessW 的硬要求（gle=87，见 start 内注释）。
+    // 空 = 原样继承父环境（不构造环境块）。构建机制（合并/按名排序/双 NUL 收尾，
+    // 排序是 CreateProcessW 的硬要求）收编在 win::build_env_block_w 单一出处。
     std::map<std::string, std::string> env_overrides_utf8;
 };
 
@@ -122,50 +121,22 @@ public:
             return false;
         }
         std::wstring cwd_wide = win::utf8_to_wide(options.cwd_utf8);
-        // 环境块覆盖：与父环境按名合并（同名覆盖）。Windows 要求块内字符串按名排序
-        // （不区分大小写）——GetEnvironmentStringsW 本就有序，覆盖合并按插入序拼会
-        // 打乱序，CreateProcessW 直接报 gle=87（踩过）；仅大小写不同的名按 Windows
-        // 语义视为同一名，覆盖者胜。
+        // 环境块构建收编 win::build_env_block_w（单一出处）；本 API 面向 UTF-8，
+        // 键值的宽字符转换是本边界自己的事——失败点名报错
         std::wstring env_block;
         if (!options.env_overrides_utf8.empty()) {
-            struct CiLess {
-                bool operator()(const std::wstring& a, const std::wstring& b) const {
-                    const std::size_t n = a.size() < b.size() ? a.size() : b.size();
-                    for (std::size_t i = 0; i < n; ++i) {
-                        const wint_t ca = towupper(a[i]), cb = towupper(b[i]);
-                        if (ca != cb) return ca < cb;
-                    }
-                    return a.size() < b.size();
-                }
-            };
-            std::map<std::wstring, std::wstring, CiLess> merged;
-            if (LPWCH block = ::GetEnvironmentStringsW()) {
-                for (LPWCH p = block; *p != L'\0';) {
-                    const std::wstring kv(p);
-                    p += kv.size() + 1;
-                    const auto eq = kv.find(L'=');
-                    // 等号在首位的是 =C:=<目录> 形态的盘符当前目录项，非环境变量
-                    if (eq != std::wstring::npos && eq != 0)
-                        merged.emplace(kv.substr(0, eq), kv.substr(eq + 1));
-                }
-                ::FreeEnvironmentStringsW(block);
-            }
+            std::vector<std::pair<std::wstring, std::wstring>> overrides;
+            overrides.reserve(options.env_overrides_utf8.size());
             for (const auto& kv : options.env_overrides_utf8) {
-                const std::wstring k = win::utf8_to_wide(kv.first);
-                const std::wstring v = win::utf8_to_wide(kv.second);
+                std::wstring k = win::utf8_to_wide(kv.first);
+                std::wstring v = win::utf8_to_wide(kv.second);
                 if ((k.empty() != kv.first.empty()) || (v.empty() != kv.second.empty())) {
                     err = "环境变量 UTF-8 转换失败: " + kv.first;
                     return false;
                 }
-                merged[k] = v;
+                overrides.emplace_back(std::move(k), std::move(v));
             }
-            for (const auto& kv : merged) {
-                env_block += kv.first;
-                env_block.push_back(L'=');
-                env_block += kv.second;
-                env_block.push_back(L'\0');
-            }
-            env_block.push_back(L'\0');   // 块以双 NUL 结尾
+            env_block = win::build_env_block_w(overrides);
         }
         SECURITY_ATTRIBUTES sa{};
         sa.nLength = sizeof(sa);

@@ -75,7 +75,7 @@ target_link_libraries(my_host PRIVATE nostos::core nostos::loader)
 | `kit/regex.hpp` | header-only | 有界正则 `Regex`（Thompson NFA 线性模拟，ECMAScript 子集）：无回溯 ⇒ 灾难性模式不可能挂死线程，步数预算另封顶；不支持反向引用/环视（解析期点名拒绝），命中位置为字节偏移 |
 | `kit/process.hpp` | header-only | 子进程生命周期（Windows） |
 | `kit/piped_process.hpp` | header-only | 管道化子进程：stdout/stderr 捕获 + stdin 可选管道化 + 环境块覆盖合并 + Job Object 进程树终止（Windows；非 Windows start 恒 false） |
-| `kit/poster.hpp` | header-only | poster 投递助手：`poster_submit`（闭包打包成堆块，post 失败/会话作废两路都回收）与 `poster_submit_await`（同步投递、阻塞等完成） |
+| `kit/poster.hpp` | header-only | poster 投递助手：`poster_submit`（闭包打包成堆块，post 失败/会话作废两路都回收；可选异常钩子形态——闭包异常交 on_error 而非静默吞，挂起-补响应消费方的槽位泄漏陷阱结构性消除）、`poster_submit_owner`/`poster_invalidate_owner`（owner 绑定：亚生命周期对象投递可作废回收）与 `poster_submit_await`（同步投递、阻塞等完成） |
 | `kit/active_gate.hpp` | header-only | 命名实现竞争发布门：同服务多实现按 env 择一首发 + set_active 事件热切（匹配发布/不匹配撤发布/空载荷保持现状）的机制托管，插件只留表组装与载荷解读 |
 | `kit/path_jail.hpp` | header-only | 路径 jail 安全原语：把不可信给定路径钉死在信任根内——文本校验 + 规范化复核 + 逐组件重解析点扫描三道闸（junction/symlink 逃逸与新建文件末端两全），失败点名原因回灌 |
 | `abi/nostos_services.h` | header-only | 知名服务表的 C 布局（`nostos.log.v1` 等） |

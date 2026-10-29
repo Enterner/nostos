@@ -90,6 +90,21 @@ typedef struct nostos_poster {
      * 不抛异常。同一 poster 反复注册以最后一次为准 ⇒ 同一 poster 应投递
      * 同构载荷（或 fn 自带类型标记）。未注册/旧宿主 ⇒ 静默丢弃。 */
     nostos_status (*on_drop)(void* self, void (*fn)(void* arg));
+
+    /* 尾部追加（NOSTOS_POSTER_HAS(poster, post_owner) 门控）：owner 绑定投递。
+     * owner = 投递方自选的不透明令牌（典型 = 拥有任务语义的对象地址）；同一
+     * owner 名下全部未执行任务可经 invalidate_owner 一次性作废回收（走 on_drop
+     * 同一回收通路），亚生命周期对象（随 turn/请求销毁的 ctx 等）投递由此
+     * 安全化——对象析构前作废 owner，闭包不可能再落到已析构对象上。owner 为
+     * 空返回 NOSTOS_ERR_INVALID_ARG（普通投递走 post）。任务体约定与 post
+     * 完全一致。 */
+    nostos_status (*post_owner)(void* self, void (*fn)(void* arg), void* arg, void* owner);
+
+    /* 尾部追加（NOSTOS_POSTER_HAS(poster, invalidate_owner) 门控）：作废指定
+     * owner 名下全部未执行任务——移出队列并逐条回调 on_drop 注册的回收器
+     * （未注册则静默丢弃）。已排水的任务不受影响；owner 为空返回
+     * NOSTOS_ERR_INVALID_ARG。会话作废仍整队列回收，与此原语正交。 */
+    nostos_status (*invalidate_owner)(void* self, void* owner);
 } nostos_poster;
 
 #define NOSTOS_POSTER_HAS(poster, field)                                  \

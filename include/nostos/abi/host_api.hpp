@@ -144,7 +144,7 @@ public:
         const std::size_t poster_from = session_marks_.empty() ? 0 : mark.posters;
         for (std::size_t i = session_posters_.size(); i > poster_from; --i) {
             PosterState* ps = session_posters_[i - 1];
-            std::vector<std::pair<void (*)(void*), void*>> dropped;
+            std::vector<PosterState::Task> dropped;
             void (*drop)(void*) = nullptr;
             {
                 std::lock_guard<std::mutex> lock(ps->mu);
@@ -152,15 +152,7 @@ public:
                 dropped.swap(ps->pending);
                 drop = ps->drop;
             }
-            if (drop != nullptr)
-                for (auto& task : dropped) {
-                    const HostBridge::Guard guard{*this};
-                    try {
-                        drop(task.second);  // 约定：fn 不抛；抛了也吞掉——收尾路径
-                    } catch (...) {         // 不许 terminate，与 drain_posted 同口径
-                        log_swallowed("a poster drop callback threw");
-                    }
-                }
+            run_drop(dropped, drop);
         }
         session_posters_.resize(poster_from);
     }
@@ -182,12 +174,41 @@ public:
     // poster 的宿主侧状态。表指向它（桥所有 ⇒ 表随桥存活）；
     // pending 是线程安全的待执行队列，宿主主循环 drain_posted() 排水。
     struct PosterState {
+        struct Task {
+            void (*fn)(void*) = nullptr;
+            void* arg = nullptr;
+            void* owner = nullptr;  // post_owner 投递的令牌；post 路径恒空
+        };
         HostBridge* bridge = nullptr;
         std::mutex mu;
-        std::vector<std::pair<void (*)(void*), void*>> pending;
+        std::vector<Task> pending;
         bool live = true;
         void (*drop)(void*) = nullptr;  // 会话作废时未执行任务的逐条回收回调（可空）
     };
+
+    // 丢弃回收的执行段：逐条以 Guard 包桥回调 drop（约定 fn 不抛；抛了也吞掉并
+    // 落日志——收尾路径不许 terminate，与 drain_posted 同口径）。end_session 与
+    // invalidate_owner 共用的「不执行、只回收」通路。
+    void run_drop(const std::vector<PosterState::Task>& dropped, void (*drop)(void*)) noexcept {
+        if (drop == nullptr) return;
+        for (const auto& task : dropped) {
+            const HostBridge::Guard guard{*this};
+            try {
+                drop(task.arg);
+            } catch (...) {
+                log_swallowed("a poster drop callback threw");
+            }
+        }
+    }
+
+    // post 入队后的唤醒接缝：锁外触发（hook 只做唤醒；即便 hook 里就地排水也
+    // 不会死锁——drain_posted 自己上锁）。见 set_post_wake。
+    static void wake_drain(PosterState* ps) noexcept {
+        if (ps->bridge != nullptr) {
+            if (auto* wake = ps->bridge->wake_fn_.load(std::memory_order_acquire))
+                wake(ps->bridge->wake_arg_.load(std::memory_order_acquire));
+        }
+    }
 
     // 表槽位（static：表构造器在类外引用）。自带锁；会话作废后返回 BAD_STATE。
     static nostos_status post_thunk(void* self, void (*fn)(void*), void* arg) noexcept {
@@ -196,14 +217,49 @@ public:
         {
             std::lock_guard<std::mutex> lock(ps->mu);
             if (!ps->live) return NOSTOS_ERR_BAD_STATE;
-            ps->pending.push_back({fn, arg});
+            ps->pending.push_back({fn, arg, nullptr});
         }
-        // 唤醒接缝：锁外触发（hook 只做唤醒；即便 hook 里就地排水也不会死锁——
-        // drain_posted 自己上锁）。见 set_post_wake。
-        if (ps->bridge != nullptr) {
-            if (auto* wake = ps->bridge->wake_fn_.load(std::memory_order_acquire))
-                wake(ps->bridge->wake_arg_.load(std::memory_order_acquire));
+        wake_drain(ps);
+        return NOSTOS_OK;
+    }
+
+    // 表槽位（static）：owner 绑定投递——任务挂到 owner 令牌名下，可经
+    // invalidate_owner 一次性作废回收。owner 为空拒绝（普通投递走 post）。
+    static nostos_status post_owner_thunk(void* self, void (*fn)(void*), void* arg,
+                                          void* owner) noexcept {
+        auto* ps = static_cast<PosterState*>(self);
+        if (ps == nullptr || fn == nullptr || owner == nullptr)
+            return NOSTOS_ERR_INVALID_ARG;
+        {
+            std::lock_guard<std::mutex> lock(ps->mu);
+            if (!ps->live) return NOSTOS_ERR_BAD_STATE;
+            ps->pending.push_back({fn, arg, owner});
         }
+        wake_drain(ps);
+        return NOSTOS_OK;
+    }
+
+    // 表槽位（static）：作废指定 owner 名下全部未执行任务——移出队列并逐条走
+    // on_drop 回收通路。已排水的任务不受影响；会话作废后 BAD_STATE。
+    static nostos_status invalidate_owner_thunk(void* self, void* owner) noexcept {
+        auto* ps = static_cast<PosterState*>(self);
+        if (ps == nullptr || owner == nullptr) return NOSTOS_ERR_INVALID_ARG;
+        std::vector<PosterState::Task> dropped;
+        void (*drop)(void*) = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(ps->mu);
+            if (!ps->live) return NOSTOS_ERR_BAD_STATE;
+            std::size_t w = 0;
+            for (std::size_t i = 0; i < ps->pending.size(); ++i) {
+                if (ps->pending[i].owner == owner)
+                    dropped.push_back(ps->pending[i]);
+                else
+                    ps->pending[w++] = std::move(ps->pending[i]);
+            }
+            ps->pending.resize(w);
+            drop = ps->drop;
+        }
+        ps->bridge->run_drop(dropped, drop);
         return NOSTOS_OK;
     }
 
@@ -258,6 +314,8 @@ public:
         out->self = &ps;
         out->post = &post_thunk;
         out->on_drop = &on_drop_thunk;
+        out->post_owner = &post_owner_thunk;
+        out->invalidate_owner = &invalidate_owner_thunk;
         return NOSTOS_OK;
     }
 
@@ -265,7 +323,7 @@ public:
     // 任务——任务体内的宿主 API 因此全部可用。fn 抛异常按 ABI 纪律兜底为日志。
     void drain_posted() {
         for (PosterState& ps : posters_) {
-            std::vector<std::pair<void (*)(void*), void*>> batch;
+            std::vector<PosterState::Task> batch;
             {
                 std::lock_guard<std::mutex> lock(ps.mu);
                 batch.swap(ps.pending);
@@ -274,7 +332,7 @@ public:
             for (auto& task : batch) {
                 Guard guard(*this);
                 try {
-                    task.first(task.second);
+                    task.fn(task.arg);
                 } catch (...) {
                     core_->log(4, "nostos: a posted task threw an exception; swallowed");
                 }

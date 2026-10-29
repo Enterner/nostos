@@ -76,13 +76,27 @@ struct PipedSpawnOptions {
 };
 
 // start 产物的一组句柄（release_handles 的返回形态）：供把生命周期移交调用方
-// 自管容器。句柄语义见各访问器。
+// 自管容器。句柄语义见各字段。
+// NOTE: 消费纪律——五句柄三个面：读面 stdout_read/stderr_read、树杀面 job（含
+// process 的退出码/等待）、写面 stdin_write（仅 stdin_pipe=true 时非空）。容器化
+// 消费方若只收四句柄（无 stdin 位），必须先 take_stdin_write 把写面取出再消费
+// 其余——写端留在原地被丢弃 = 匿名管道无 EOF（读端读取线程永挂）+ 句柄泄漏。
+// 写面「写完即关送 EOF」的推迟写形态（先起读取线程排水、再同步写 stdin 并关闭）
+// 就靠它把写端从移交集合里摘出来自管。
 struct PipedHandles {
     void* process = nullptr;      // Windows：HANDLE（可 TerminateProcess/GetExitCodeProcess）
     void* stdout_read = nullptr;  // Windows：HANDLE（可 ReadFile；EOF = 写端全关）
     void* stderr_read = nullptr;
     void* job = nullptr;          // Windows：HANDLE（KILL_ON_JOB_CLOSE，可能为 null）
     void* stdin_write = nullptr;  // Windows：HANDLE（可 WriteFile；仅 stdin_pipe=true 时非空）
+
+    // 取走 stdin 写端（取出置空）——「容器只收读面/树杀面、写面自管推迟写」的
+    // 消费形态入口。
+    void* take_stdin_write() {
+        void* h = stdin_write;
+        stdin_write = nullptr;
+        return h;
+    }
 };
 
 class PipedProcess {

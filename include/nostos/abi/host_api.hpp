@@ -41,7 +41,13 @@ namespace nostos::abi {
 
 class HostBridge {
 public:
-    explicit HostBridge(HostCore& core) noexcept : core_(&core) {}
+    explicit HostBridge(HostCore& core) noexcept : core_(&core) {
+        // 首个构造的桥登记为进程级主桥：外来线程（插件自建的 worker/io 线程）
+        // 没有 TLS 桥，依赖「当前桥」的 thunk 会解析落空——日志这类进程级面
+        // 回落到主桥，与宿主线程的日志共用同一 sink（同格式同流）。
+        HostBridge* expected = nullptr;
+        primary_.compare_exchange_strong(expected, this, std::memory_order_acq_rel);
+    }
 
     HostBridge(const HostBridge&) = delete;
     HostBridge& operator=(const HostBridge&) = delete;
@@ -49,6 +55,8 @@ public:
     // 从未 install 的桥解析不出任何东西——即 thunk 报告为“没有宿主”的空情形。
     ~HostBridge() {
         if (current() == this) set_current(previous_);
+        HostBridge* expected = this;
+        primary_.compare_exchange_strong(expected, nullptr, std::memory_order_acq_rel);
     }
 
     HostCore& core() noexcept { return *core_; }
@@ -61,6 +69,11 @@ public:
 
     static HostBridge* current() noexcept { return current_slot(); }
     static void set_current(HostBridge* bridge) noexcept { current_slot() = bridge; }
+
+    // 进程级主桥（构造注册、析构摘除；原子直读——外来线程的回落路径无锁）
+    static HostBridge* primary() noexcept {
+        return primary_.load(std::memory_order_acquire);
+    }
 
     // 让本桥成为 thunk 在本线程上解析到的那个桥，直到它被销毁或安装了另一个
     // 桥。幂等。由 Host<...> 在首次需要自己的桥时调用。
@@ -415,6 +428,9 @@ private:
         return slot;
     }
 
+    // 进程级主桥（构造注册、析构摘除；原子——外来线程的回落路径无锁）
+    inline static std::atomic<HostBridge*> primary_{nullptr};
+
     static const nostos_host_api* host_api_table() noexcept;
 
     HostCore* core_;
@@ -507,7 +523,9 @@ inline void off_thunk(std::uint32_t subscription) noexcept {
 inline void log_thunk(int level, const char* msg) noexcept {
     if (msg == nullptr) return;
     HostBridge* bridge = HostBridge::current();
-    if (bridge == nullptr) {  // 例如 plugin 在自己的线程上打日志
+    if (bridge == nullptr)  // 外来线程（插件自建 worker/io 线程）无 TLS 桥：回落
+        bridge = HostBridge::primary();   // 进程级主桥——与宿主 sink 同格式同流
+    if (bridge == nullptr) {  // 无任何宿主（装配/拆卸窗口）：内核兜底 stderr
         std::fprintf(stderr, "[nostos][%d] %s\n", level, msg);
         return;
     }

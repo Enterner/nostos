@@ -9,9 +9,9 @@
 //   · 环境块可覆盖合并（env_overrides_utf8，缺省原样继承）。
 //
 // 刻意不在本层的：
-//   · 逐行分割归调用方——配套的 LineSplitter 在本头内（管道/网络分块边界不保证
-//     对齐，必须按字节流喂入）；读取线程模型也归调用方（典型形态：两路读取线程
-//     + 单投递线程，消除并发过 poster 边界的竞态）；
+//   · 逐行分割（LineSplitter）与「读循环拼装」（read_lines）在本头内——管道/网络
+//     分块边界不保证对齐，这两件是字节流侧的机制；但读取线程模型仍归调用方
+//     （典型形态：两路读取线程 + 单投递线程，消除并发过 poster 边界的竞态）；
 //   · 输出编码清洗归调用方——子进程字节流不保证 UTF-8（控制台代码页任意）；
 //   · 沙箱（AppContainer/低盒令牌）是宿主的安全策略，不进 kit。
 //
@@ -384,5 +384,17 @@ private:
     std::uint32_t pid_ = 0;
 #endif
 };
+
+// 按行读循环拼装件：read_chunk → LineSplitter::feed → EOF 后 flush 收敛为单调用
+// ——「读取线程排水」消费方的固定形状，逐行回调 on_line(line)（\r 已剥，末段无
+// 换行的半行经 flush 交付）。阻塞读，线程模型归调用方（见文件头「刻意不在本层的」）。
+template <typename F>
+void read_lines(PipedProcess::native_handle read_end, F&& on_line) {
+    LineSplitter splitter;
+    std::string chunk;
+    while (PipedProcess::read_chunk(read_end, chunk))
+        splitter.feed(chunk.data(), chunk.size(), on_line);
+    splitter.flush(on_line);
+}
 
 }  // namespace nostos::kit

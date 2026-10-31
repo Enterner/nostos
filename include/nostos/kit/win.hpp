@@ -56,6 +56,17 @@ inline std::string wide_to_utf8(const wchar_t* text) {
 #endif
 }
 
+// ASCII 小写折叠（窄字符匹配的 case-insensitive 底座：扩展名/清单项/子串过滤）。
+// 只折叠 A-Z、无 locale 依赖；本函数平台无关，放在这里是因为它是「大小写不敏感
+// 语义」小件的唯一出处——宿主层不许 include 产品仓的插件域共享头，折叠件只有
+// 进 kit 才能同时够到宿主/插件两域。宽字符路径口径（Windows FS 语义）用
+// towlower，另见 path_jail 的 under_root。
+inline std::string ascii_lower(std::string s) {
+    for (char& c : s)
+        if (c >= 'A' && c <= 'Z') c += 32;
+    return s;
+}
+
 // 可中断睡眠：total 时长内按 slice 分片 Sleep，cancel 置位即提前返回。后台线程的
 // 停机旗标形态——整段睡眠会让「置旗 + join」的停机白等完整剩余时长。
 inline void sleep_interruptible(std::chrono::milliseconds total,

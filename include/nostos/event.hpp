@@ -271,6 +271,12 @@ private:
 // emit_raw()。同一个 event 的 raw listener 总是在类型化 listener 之后、按
 // 注册顺序运行。slot 单播通道（on_slot/emit_slot，slot!=0）与广播通道并行：
 // 共用同一 token 空间与退订路径，但派发互相隔绝（见 emit_slot 的注释）。
+//
+// 重入安全三路同律：类型化 dispatch、广播 raw（dispatch_raw）与 slot 通道
+// （emit_slot）都在各自列表的快照上迭代——listener 内对同一通道 on_slot /
+// off_raw / emit 全部内存安全（退订即时生效、重订本轮不可见）。内核不内建的
+// 只是跨订阅者因果序（见文件头注释）：消费方要「收口推进晚于全部订阅者看见
+// 事件」就必须自行推迟一拍，这与快照纪律无关。
 class EventHub {
 public:
     EventHub() = default;

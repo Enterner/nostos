@@ -57,6 +57,9 @@ public:
         if (current() == this) set_current(previous_);
         HostBridge* expected = this;
         primary_.compare_exchange_strong(expected, nullptr, std::memory_order_acq_rel);
+        // 摘唤醒钩（兜底——完整的时序契约在 set_post_wake 的注释）：桥已亡，
+        // 此后任何 post 的 wake 都不得再触达宿主状态。
+        wake_fn_.store(nullptr, std::memory_order_release);
     }
 
     HostCore& core() noexcept { return *core_; }
@@ -306,6 +309,9 @@ public:
     // 约定：hook 必须 noexcept 且轻（只做“唤醒”，重活留给排水后的任务体）；
     // 宿主应在装载插件前设置一次——运行期更换不作同步承诺（投递线程可能读到
     // 旧组合；构造性规避：只置一次）。
+    // teardown 契约：hook/arg 指向的宿主状态必须比本桥活得久，或在拆桥前先摘钩
+    // （set_post_wake(nullptr, nullptr)）。post 与摘钩跨线程并发，摘钩只是收窄
+    // 窗口不是同步点——宿主状态自身的销毁次序仍归宿主（析构代摘钩只是兜底）。
     void set_post_wake(void (*fn)(void*), void* arg) noexcept {
         wake_fn_.store(fn, std::memory_order_release);
         wake_arg_.store(arg, std::memory_order_release);

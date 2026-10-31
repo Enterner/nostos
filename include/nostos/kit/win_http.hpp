@@ -41,24 +41,58 @@ struct HttpFetchOptions {
     std::size_t body_cap = 256 * 1024;  // 响应体读取上限，到顶截断
 };
 
+// URL 拆解的结构化出参：http_fetch 内部与「自建会话的流式客户端」（不适用
+// http_fetch 的整读形态）共用同一次 crack——URL_COMPONENTS 的 lpsz* 指向
+// url 缓冲内部，出参立即取走拷贝，调用方拿到的是自主持有的串。
+// path = URL path + extra info（query）拼合，即发请求用的完整路径形态。
+struct UrlParts {
+    std::wstring host;
+    INTERNET_PORT port = 443;
+    std::wstring path;
+    bool secure = false;
+};
+
+// 拆解失败 ⇒ false + gle 点名（GetLastError）。
+inline bool crack_url(const std::wstring& url, UrlParts& out, unsigned long& gle) {
+    URL_COMPONENTS uc{};
+    uc.dwStructSize = sizeof(uc);
+    uc.dwSchemeLength = 1;
+    uc.dwHostNameLength = 1;
+    uc.dwUrlPathLength = 1;
+    uc.dwExtraInfoLength = 1;
+    if (!WinHttpCrackUrl(url.c_str(), static_cast<DWORD>(url.size()), 0, &uc)) {
+        gle = GetLastError();
+        return false;
+    }
+    out.host.assign(uc.lpszHostName, uc.dwHostNameLength);
+    out.port = uc.nPort;
+    out.secure = uc.nScheme == INTERNET_SCHEME_HTTPS;
+    out.path = std::wstring(uc.lpszUrlPath, uc.dwUrlPathLength) +
+               std::wstring(uc.lpszExtraInfo, uc.dwExtraInfoLength);
+    return true;
+}
+
+// WinHTTP 失败阶段的人话点名。gle 必须显式传入：本函数定位是「调用点已离开
+// 失败现场」（日志拼接/异步路径），彼时 GetLastError 不可再读。仅覆盖常见
+// 失败码；未知码回落 "WinHTTP 错误 N"。
+inline std::string winhttp_error_text(unsigned long gle) {
+    switch (gle) {
+        case ERROR_WINHTTP_TIMEOUT: return "超时";
+        case ERROR_WINHTTP_NAME_NOT_RESOLVED: return "域名解析失败";
+        case ERROR_WINHTTP_CANNOT_CONNECT: return "无法连接（断网，或本地代理未启动）";
+        case ERROR_WINHTTP_CONNECTION_ERROR: return "与服务器的连接被重置";
+        default: return "WinHTTP 错误 " + std::to_string(gle);
+    }
+}
+
 // 一发 HTTP 请求：crack→open→connect→request→send→receive→status→body 收敛为
 // 单调用。定位是"探测/拉清单"的短平快形态，不是通用客户端——固定 NO_PROXY
 // 直连、不跟随重定向、body 一次性整读（body_cap 封顶）；流式/SSE 场景不适用。
 inline HttpReply http_fetch(const std::wstring& url,
                             const HttpFetchOptions& options = {}) {
     HttpReply reply;
-    URL_COMPONENTS uc{};
-    uc.dwStructSize = sizeof(uc);
-    uc.dwSchemeLength = 1;
-    uc.dwHostNameLength = 1;
-    uc.dwUrlPathLength = 1;
-    uc.dwExtraInfoLength = 1;  // lpsz* 指 url 缓冲内部，crack 后立即取走拼合
-    if (!WinHttpCrackUrl(url.c_str(), static_cast<DWORD>(url.size()), 0, &uc)) {
-        reply.gle = GetLastError();
-        return reply;
-    }
-    const std::wstring path = std::wstring(uc.lpszUrlPath, uc.dwUrlPathLength) +
-                              std::wstring(uc.lpszExtraInfo, uc.dwExtraInfoLength);
+    UrlParts parts;
+    if (!crack_url(url, parts, reply.gle)) return reply;
     struct Handle {  // HINTERNET RAII：任何早退路径统一收口，析构序 req→con→ses
         HINTERNET h = nullptr;
         ~Handle() {
@@ -71,14 +105,12 @@ inline HttpReply http_fetch(const std::wstring& url,
     ses.h = WinHttpOpen(options.user_agent, WINHTTP_ACCESS_TYPE_NO_PROXY,
                         WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (ses.h != nullptr)
-        con.h = WinHttpConnect(ses.h,
-                               std::wstring(uc.lpszHostName, uc.dwHostNameLength).c_str(),
-                               uc.nPort, 0);
+        con.h = WinHttpConnect(ses.h, parts.host.c_str(), parts.port, 0);
     if (con.h != nullptr)
         req.h = WinHttpOpenRequest(
-            con.h, options.method, path.c_str(), nullptr, WINHTTP_NO_REFERER,
+            con.h, options.method, parts.path.c_str(), nullptr, WINHTTP_NO_REFERER,
             WINHTTP_DEFAULT_ACCEPT_TYPES,
-            uc.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0);
+            parts.secure ? WINHTTP_FLAG_SECURE : 0);
     if (req.h == nullptr) {
         reply.gle = GetLastError();
         return reply;

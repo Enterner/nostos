@@ -72,6 +72,31 @@ std::string lower(std::string_view text) {
     return out;
 }
 
+// %XX 解码（非法序列原样保留）；'+' 保留不折叠——见 Request::query 的注释
+// （文件名/base64 可含加号，空格折叠是消费方的语义决定，不属传输层）。
+std::string decode_query_component(std::string_view raw) {
+    auto hexv = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    };
+    std::string out;
+    out.reserve(raw.size());
+    for (std::size_t i = 0; i < raw.size(); ++i) {
+        if (raw[i] == '%' && i + 2 < raw.size()) {
+            const int hi = hexv(raw[i + 1]), lo = hexv(raw[i + 2]);
+            if (hi >= 0 && lo >= 0) {
+                out.push_back(static_cast<char>((hi << 4) | lo));
+                i += 2;
+                continue;
+            }
+        }
+        out.push_back(raw[i]);
+    }
+    return out;
+}
+
 // ---- 请求解析 ---------------------------------------------------------------
 
 // 只做"够用"的解析：请求行 + 头 + 可选 Content-Length 体。任何畸形都返回 false
@@ -156,6 +181,32 @@ std::string Request::header(std::string_view name) const {
     const std::string wanted = lower(name);
     for (const auto& header : headers)
         if (header.name == wanted) return header.value;
+    return {};
+}
+
+std::string Request::query(std::string_view name) const {
+    const auto q = target.find('?');
+    if (q == std::string::npos) return {};
+    std::size_t pos = q + 1;
+    for (;;) {
+        const auto amp = target.find('&', pos);
+        const std::string_view pair =
+            std::string_view(target).substr(pos, amp == std::string::npos
+                                                       ? std::string_view::npos
+                                                       : amp - pos);
+        if (!pair.empty()) {
+            const auto eq = pair.find('=');
+            const std::string_view key =
+                eq == std::string_view::npos ? pair : pair.substr(0, eq);
+            // 名字按同规矩解码后精确比对——键含 %XX 时语义仍对
+            if (decode_query_component(key) == name)
+                return eq == std::string_view::npos
+                           ? std::string()
+                           : decode_query_component(pair.substr(eq + 1));
+        }
+        if (amp == std::string::npos) break;
+        pos = amp + 1;
+    }
     return {};
 }
 

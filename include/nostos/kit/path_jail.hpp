@@ -36,7 +36,26 @@ class PathJail {
 public:
     explicit PathJail(std::wstring root_wide) { root_ = canonical(std::move(root_wide)); }
 
+    // UTF-8 根构造（消费方边界处 env/config 的根都是 UTF-8，宽字符转换收进本
+    // 边界单源）。转换失败 ⇒ 空根 ⇒ resolve 恒拒（安全原语的失败方向是关闭不是
+    // 放行）；env 来源的根调用方自校验非空（现消费方均如此）。
+    explicit PathJail(std::string root_utf8)
+        : PathJail(win::utf8_to_wide(root_utf8)) {}
+
     const std::wstring& root() const noexcept { return root_; }
+
+    // resolve 的聚合出参：与四参出参同语义，新消费方优先用它（少三行出参样板）。
+    // err 非空 ⇒ 失败。full = 规范化全路径（调用方的存储键）；norm = 折叠后的
+    // 相对路径（'/' 分隔）；err = 失败原因（回灌给模型）。
+    struct Resolved {
+        std::wstring full;
+        std::string norm;
+        std::string err;
+    };
+    bool resolve(const std::string& rel_utf8, Resolved& out) const {
+        out.err.clear();
+        return resolve(rel_utf8, out.full, out.norm, out.err);
+    }
 
     // 校验并解析：成功 ⇒ out_full（规范化全路径，调用方的存储键）+ out_norm（折叠
     // 后的相对路径，'/' 分隔）；失败 ⇒ false + err 点名原因。
@@ -182,10 +201,20 @@ private:
 // 非 Windows：安全闸无语义可依时宁可显式拒绝，不做假放行。
 class PathJail {
 public:
+    struct Resolved {
+        std::wstring full;
+        std::string norm;
+        std::string err;
+    };
     explicit PathJail(std::wstring) {}
+    explicit PathJail(std::string) {}
     const std::wstring& root() const noexcept {
         static const std::wstring empty;
         return empty;
+    }
+    bool resolve(const std::string&, Resolved& out) const {
+        out.err = "路径 jail 仅 Windows 支持";
+        return false;
     }
     bool resolve(const std::string&, std::wstring&, std::string&, std::string& err) const {
         err = "路径 jail 仅 Windows 支持";

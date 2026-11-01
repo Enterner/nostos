@@ -66,6 +66,14 @@ public:
     virtual const std::type_info& payload_type() const noexcept = 0;
 };
 
+// 快照派发单源：跳过已退订槽位后逐一投递。类型化、广播 raw、slot 三路共用这
+// 一份循环；重入纪律（在快照上迭代）见 EventHub 头注释。
+template <typename Slots, typename Payload>
+void dispatch_active(const Slots& slots, const Payload& payload) {
+    for (const auto& s : slots)
+        if (s.control->active) s.fn(payload);
+}
+
 }  // namespace detail
 
 // 一条注册的 RAII 句柄。拷贝即共享同一注册；析构与 unsubscribe() 幂等。
@@ -136,8 +144,7 @@ struct EmitPolicy {
 
     template <typename Slots>
     static void dispatch(const Slots& slots, const E& e) {
-        for (const auto& s : slots)
-            if (s.control->active) s.fn(e);
+        detail::dispatch_active(slots, e);
     }
 };
 
@@ -201,13 +208,12 @@ public:
     // 完整的策略结果（EmitPolicy 为 void，BailPolicy 为 bool，WaterfallPolicy
     // 为变换后的载荷）。
     //
-    // 本机实测开销（Release，2 万次 dispatch）：下面的快照是每次 dispatch 一次
-    // 分配（固定约 34 ns）加每个 listener 约 11 ns——N=1000 时约为原地迭代的
-    // 9 倍，这就是上面重入承诺的代价。listener 的捕获要保持小：按值捕获大对象
-    // 会把 std::function 顶出小缓冲区优化，每个 listener 每次 dispatch 多一次
-    // 堆分配（实测：N=10、64 字节捕获时每次 dispatch 11 次分配）。按引用或
-    // shared_ptr 捕获。换成 copy-on-write 的槽位向量能收回全部 9 倍（实测），
-    // 且不放弃重入承诺。
+    // 派发零分配：快照拷贝的是 shared_ptr 而非 vector，listener 运行期间看到的
+    // 表不可变，subscribe / unsubscribe / emit 在 listener 内始终安全（表本身
+    // 的重建只发生在 on()）。listener 的捕获要保持小：按值捕获大对象会把
+    // std::function 顶出小缓冲区优化，每个 listener 每次 dispatch 多一次堆
+    // 分配（实测：N=10、64 字节捕获时每次 dispatch 11 次分配）。按引用或
+    // shared_ptr 捕获。
     decltype(auto) dispatch(const E& e) {
         // 拷贝的是 shared_ptr 而非 vector：零分配，且 listener 运行期间看到的
         // 表不可变，因此在 listener 内部 subscribe / unsubscribe / emit 始终
@@ -267,8 +273,8 @@ private:
 };
 
 // 每个 event id 拥有一条 bus，外加供 C ABI 层接入的类型擦除 raw 通道：
-// host_api::on(evt_id, fn, user) 变成 on_raw()，插件引发 event 变成
-// emit_raw()。同一个 event 的 raw listener 总是在类型化 listener 之后、按
+// host_api::on(evt_id, fn, user) 落到 on_slot(evt_id, 0, …)（广播），插件引发
+// event 变成 emit_raw()。同一个 event 的 raw listener 总是在类型化 listener 之后、按
 // 注册顺序运行。slot 单播通道（on_slot/emit_slot，slot!=0）与广播通道并行：
 // 共用同一 token 空间与退订路径，但派发互相隔绝（见 emit_slot 的注释）。
 //
@@ -315,8 +321,16 @@ public:
         if (!fn) return 0;
         const std::uint32_t token = next_raw_token_++;
         auto control = std::make_shared<detail::SubControl>();
-        channels_[RawToken{evt_id, slot}].slots.push_back(
-            RawSlot{token, std::move(fn), std::move(control)});
+        // copy-on-write（与类型化 bus 同一纪律）：先建下一张表（顺带丢弃已退订
+        // 槽位），再一次赋值发布——派发期快照是 shared_ptr 拷贝，零分配。
+        auto& channel = channels_[RawToken{evt_id, slot}];
+        std::vector<RawSlot> next;
+        next.reserve(channel ? channel->size() + 1 : 1);
+        if (channel)
+            for (const auto& s : *channel)
+                if (s.control->active) next.push_back(s);
+        next.push_back(RawSlot{token, std::move(fn), control});
+        channel = std::make_shared<const SlotsVec>(std::move(next));
         raw_tokens_.emplace(token, RawToken{evt_id, slot});
         return token;
     }
@@ -328,16 +342,24 @@ public:
         const RawToken key = t->second;
         raw_tokens_.erase(t);
         auto channel = channels_.find(key);
-        if (channel == channels_.end()) return;
-        auto& slots = channel->second.slots;
-        for (auto it = slots.begin(); it != slots.end(); ++it) {
-            if (it->token == token) {
-                if (it->control) it->control->active = false;
-                slots.erase(it);
-                break;
-            }
+        if (channel == channels_.end() || !channel->second) return;
+        // 只翻转自己的控制块：任何在途快照都逐槽查 active，死表项永远被跳过。
+        for (const auto& s : *channel->second)
+            if (s.token == token && s.control) s.control->active = false;
+        // 重建发布，顺带丢弃死表项；空通道整体摘除（slot 随 turn 递增，不摘会
+        // 无界累积）。noexcept 路径上分配失败不能变 terminate：降级为旧表惰性
+        // 滞留——控制块已翻，行为与重建后完全一致，只是内存晚一点回收。
+        try {
+            std::vector<RawSlot> next;
+            next.reserve(channel->second->size());
+            for (const auto& s : *channel->second)
+                if (s.control->active) next.push_back(s);
+            if (next.empty())
+                channels_.erase(channel);
+            else
+                channel->second = std::make_shared<const SlotsVec>(std::move(next));
+        } catch (...) {
         }
-        if (slots.empty()) channels_.erase(channel);
     }
 
     // 从 C++ 之外抵达的载荷（插件 emit 一个共享头里的 C 结构体）。E 的原生
@@ -364,11 +386,9 @@ public:
             return;
         }
         auto it = channels_.find(RawToken{evt_id, slot});
-        if (it == channels_.end()) return;
-        auto snapshot = it->second.slots;  // 重入安全，与 dispatch_raw 同一纪律
-        for (auto& s : snapshot) {
-            if (s.control->active) s.fn(payload);
-        }
+        if (it == channels_.end() || !it->second) return;
+        const auto snapshot = it->second;  // shared_ptr 拷贝：零分配，重入安全
+        detail::dispatch_active(*snapshot, payload);
     }
 
     // ---- 内省（诊断口径：广播与 slot 通道都计入）---------------------------
@@ -378,16 +398,26 @@ public:
     bool knows(std::uint64_t evt_id) const noexcept {
         if (buses_.count(evt_id) != 0) return true;
         // channels_ 按 (evt_id, slot) 有序，同一 evt_id 的通道连续：定位首项即可。
-        auto it = channels_.lower_bound(RawToken{evt_id, 0});
-        return it != channels_.end() && it->first.evt_id == evt_id;
+        // 通道存在不再等于有活动——退订只翻控制块，死表项惰性滞留到重建，此处
+        // 必须逐槽查 active。
+        for (auto it = channels_.lower_bound(RawToken{evt_id, 0});
+             it != channels_.end() && it->first.evt_id == evt_id; ++it) {
+            if (!it->second) continue;  // on_slot 分配失败留下的空窗，无活动
+            for (const auto& s : *it->second)
+                if (s.control->active) return true;
+        }
+        return false;
     }
 
-    // 该 id 上的 raw 订阅总数：广播 + 全部 slot 槽位求和。
+    // 该 id 上的存活 raw 订阅数：广播 + 全部 slot 槽位求和（惰性死表项不计）。
     std::size_t raw_listener_count(std::uint64_t evt_id) const noexcept {
         std::size_t count = 0;
         for (auto it = channels_.lower_bound(RawToken{evt_id, 0});
-             it != channels_.end() && it->first.evt_id == evt_id; ++it)
-            count += it->second.slots.size();
+             it != channels_.end() && it->first.evt_id == evt_id; ++it) {
+            if (!it->second) continue;  // on_slot 分配失败留下的空窗，无活动
+            for (const auto& s : *it->second)
+                if (s.control->active) ++count;
+        }
         return count;
     }
 
@@ -397,10 +427,9 @@ public:
     // 由 EventBus::notify_raw 调用。
     void dispatch_raw(std::uint64_t evt_id, const void* payload) {
         auto it = channels_.find(RawToken{evt_id, 0});
-        if (it == channels_.end()) return;
-        auto snapshot = it->second.slots;  // 重入安全
-        for (auto& slot : snapshot)
-            if (slot.control->active) slot.fn(payload);
+        if (it == channels_.end() || !it->second) return;
+        const auto snapshot = it->second;  // shared_ptr 拷贝：零分配，重入安全
+        detail::dispatch_active(*snapshot, payload);
     }
 
 private:
@@ -430,10 +459,7 @@ private:
         std::function<void(const void*)> fn;
         std::shared_ptr<detail::SubControl> control;
     };
-
-    struct RawChannel {
-        std::vector<RawSlot> slots;
-    };
+    using SlotsVec = std::vector<RawSlot>;
 
     // 订阅 token 的落点：slot=0 是广播，slot!=0 是单播。
     struct RawToken {
@@ -447,8 +473,9 @@ private:
     std::unordered_map<std::uint64_t, std::unique_ptr<detail::BusBase>> buses_;
     std::unordered_map<std::uint64_t, std::function<void(const void*)>> emitters_;
     // 广播（slot=0）与单播（slot!=0）共用一张通道表：键即落点，token 空间与退订
-    // 路径天然合一；派发互相隔绝的纪律在 on_slot/emit_slot 的注释里。
-    std::map<RawToken, RawChannel> channels_;
+    // 路径天然合一；派发互相隔绝的纪律在 on_slot/emit_slot 的注释里。值为不可变
+    // 槽位表的 shared_ptr——注册/退订整表换发（copy-on-write），派发期快照零分配。
+    std::map<RawToken, std::shared_ptr<const SlotsVec>> channels_;
     std::unordered_map<std::uint32_t, RawToken> raw_tokens_;
     std::uint32_t next_raw_token_ = 1;
 };

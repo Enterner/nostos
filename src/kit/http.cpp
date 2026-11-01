@@ -349,7 +349,13 @@ struct Server::Impl {
                 for (const auto& client : clients_) {
                     if (client.fd == kInvalidSocket) continue;   // 本轮开头刚关的
                     FD_SET(client.fd, &readable);
-                    if (!client.out.empty()) FD_SET(client.fd, &writable);
+                    // 有剩余文件的连接同样挂 writable：文件流每轮靠「flush 排空 →
+                    // fill_file 回填」推进，out 恰好送空而 remaining>0 时若不挂号，
+                    // 下轮 select 无任何就绪事件，续推永久停摆（踩过: 4.4MB 流恰好
+                    // 卡死 buffer_cap，孤立连接下必现——有其他连接产生事件时呈
+                    // 「蹭车」式龟速而非全停）
+                    if (!client.out.empty() || (client.file && client.remaining > 0))
+                        FD_SET(client.fd, &writable);
                     if (client.fd > max_fd) max_fd = client.fd;
                 }
             }

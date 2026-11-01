@@ -42,7 +42,7 @@ if(MSVC)
     #                Release 不行）。
     # /utf-8       ：源码是 BOM-less UTF-8 的中文注释；MSVC 默认按系统 ACP 解读，
     #                注释尾字节撞上 0x5C（\）会吞掉下一行。挂 INTERFACE 让所有
-    #                消费者与 loader/kit_http 的编译都免疫。
+    #                消费者与 loader 的编译都免疫。
     target_compile_options(nostos INTERFACE /permissive- /EHsc /utf-8)
 endif()
 
@@ -116,36 +116,3 @@ install(FILES
     "${CMAKE_CURRENT_BINARY_DIR}/nostosConfigVersion.cmake"
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/nostos)
 
-# ---- kit（Tier 1 能力层）----------------------------------------------------
-#
-# 头随 core 分发（include/nostos/kit/）；config 的 JSON 层使用 vendored
-# nlohmann/json（include/nostos/nlohmann/json.hpp，3.11.3，版本钉死）。
-# vendored 库装在 nostos/ 名字空间之下而不是顶层 include/：消费者自带另一版本的
-# nlohmann 时互不顶替（顶层同名头是典型 ODR 冲突源）。include/nostos 的整目录
-# install 已把它带上，无需单独安装规则。
-# 消费方：target_link_libraries(x PRIVATE nostos::kit)。
-
-add_library(nostos_kit INTERFACE)
-target_link_libraries(nostos_kit INTERFACE nostos)
-add_library(nostos::kit ALIAS nostos_kit)
-
-install(TARGETS nostos_kit EXPORT nostosTargets)
-
-# ---- kit_http（Tier 1 唯一的编译型组件：平台 socket 代码）--------------------
-#
-# 单线程 select 循环 + 每客户端有界缓冲（背压闸门）——设计理由见 kit/http.hpp
-# 头注释。
-add_library(nostos_http STATIC src/kit/http.cpp)
-target_include_directories(nostos_http PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
-target_link_libraries(nostos_http PUBLIC nostos)
-if(WIN32)
-    target_link_libraries(nostos_http PUBLIC ws2_32)
-endif()
-set_target_properties(nostos_http PROPERTIES EXPORT_NAME kit_http)
-add_library(nostos::kit_http ALIAS nostos_http)
-
-install(TARGETS nostos_http EXPORT nostosTargets
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

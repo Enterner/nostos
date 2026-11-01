@@ -620,6 +620,14 @@ struct Server::Impl {
                 continue;
             }
             client.out += frame;
+            // NOTE: 追加后立即 flush——背压闸门量的必须是「客户端真正消化不了」
+            // 的积压，而不是「select 循环还没轮到发」的欠账。只入队不发送时，
+            // 密集广播（循环来不及插轮次）会把健康读者的 out 也顶过 buffer_cap，
+            // 跳帧闸门误杀活跃连接（探针实测：读者只收到 21020/30000，缺口与
+            // 一次 interleave 窗口内溢出 buffer_cap 的量吻合）。非阻塞 socket，
+            // send 至多 EWOULDBLOCK 即返回，不阻塞广播方；本函数已持
+            // clients_mu_，与循环线程的 flush 同锁串行。
+            flush(client);
         }
     }
 
